@@ -41,4 +41,4 @@ jobs:
     - name: Build
       run: |
           make BUILDTAGS=""
-          sudo make install
+          sudo make package
