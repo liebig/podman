@@ -17,6 +17,8 @@ jobs:
     - name: Install Dependencies
       run: |
           sudo apt-get update && sudo apt-get -y install \
+          pkgconf \
+          build-essential \
           btrfs-progs \
           git \
           golang-go \
