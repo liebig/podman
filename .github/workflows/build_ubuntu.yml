@@ -41,7 +41,7 @@ jobs:
     - name: Build
       run: |
           make BUILDTAGS=""
-          sudo make binaries
+          sudo make package
           
     - uses: actions/upload-artifact@v3
       with:
