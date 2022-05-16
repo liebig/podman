@@ -17,7 +17,6 @@ jobs:
     - name: Install Dependencies
       run: |
           sudo apt-get update && sudo apt-get -y install \
-          build-essential \
           btrfs-progs \
           git \
           golang-go \
@@ -42,7 +41,7 @@ jobs:
     - name: Build
       run: |
           make BUILDTAGS=""
-          sudo make package
+          sudo make podman-release
           
     - uses: actions/upload-artifact@v3
       with:
