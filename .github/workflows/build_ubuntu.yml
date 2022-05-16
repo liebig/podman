@@ -14,7 +14,7 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Install valgrind
+    - name: Install Dependencies
       run: |
           sudo apt-get update && sudo apt-get -y install \
           btrfs-progs \
@@ -37,3 +37,8 @@ jobs:
           pkg-config \
           runc \
           uidmap
+          
+    - name: Build
+      run: |
+          make BUILDTAGS=""
+          sudo make install
