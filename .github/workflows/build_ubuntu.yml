@@ -1,4 +1,4 @@
-name: Makefile CI
+name: Build Ubuntu
 
 on:
   push:
@@ -14,14 +14,26 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: configure
-      run: ./configure
-      
-    - name: Install dependencies
-      run: make
-      
-    - name: Run check
-      run: make check
-      
-    - name: Run distcheck
-      run: make distcheck
+    - name: Install valgrind
+      run: |
+          sudo apt-get install \
+          btrfs-progs \
+          git \
+          golang-go \
+          go-md2man \
+          iptables \
+          libassuan-dev \
+          libbtrfs-dev \
+          libc6-dev \
+          libdevmapper-dev \
+          libglib2.0-dev \
+          libgpgme-dev \
+          libgpg-error-dev \
+          libprotobuf-dev \
+          libprotobuf-c-dev \
+          libseccomp-dev \
+          libselinux1-dev \
+          libsystemd-dev \
+          pkg-config \
+          runc \
+          uidmap
