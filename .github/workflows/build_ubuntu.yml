@@ -41,4 +41,11 @@ jobs:
     - name: Build
       run: |
           make BUILDTAGS=""
-          sudo make package
+          sudo make install
+          
+          - uses: actions/upload-artifact@v3
+          
+    - uses: actions/upload-artifact@v3
+      with:
+        name: podman
+        path: .
