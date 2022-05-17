@@ -1,4 +1,4 @@
-name: Build Ubuntu
+name: Build Linux
 
 on:
   workflow_dispatch
