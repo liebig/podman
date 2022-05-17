@@ -37,7 +37,7 @@ jobs:
           
     - name: Build
       run: |
-          make BUILDTAGS=""
+          make BUILDTAGS="seccomp"
           sudo make podman-release
           
     - uses: actions/upload-artifact@v3
