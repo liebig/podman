@@ -8,6 +8,17 @@ Podman (the POD MANager) is a tool for managing containers and images, volumes m
 Podman runs containers on Linux, but can also be used on Mac and Windows systems using a Podman-managed virtual machine.
 Podman is based on libpod, a library for container lifecycle management that is also contained in this repository. The libpod library provides APIs for managing containers, pods, container images, and volumes.
 
+:exclamation: **This fork does not contain any code changes and is only intended to automatically build the Linux AMD64 binaries.**
+
+## Linux AMD64 binaries
+
+* [Nightly Builds](https://github.com/liebig/podman/actions/workflows/build_linux_nightly.yml)
+* [Latest Version: 4.1.0](https://github.com/liebig/podman/releases/tag/v4.1.0-release)
+* [Version: 4.0.3](https://github.com/liebig/podman/releases/tag/v4.0.3-release)
+* [Version: 3.4.7](https://github.com/liebig/podman/releases/tag/v3.4.7-release)
+
+## Official releases
+
 * [Latest Version: 4.1.1](https://github.com/containers/podman/releases/tag/v4.1.1)
   * Latest Remote client for Windows
   * Latest Remote client for macOS
