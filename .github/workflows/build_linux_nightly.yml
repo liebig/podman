@@ -1,0 +1,49 @@
+name: Build Linux Nightly
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Dependencies
+      run: |
+          sudo apt-get update && sudo apt-get -y install \
+          btrfs-progs \
+          git \
+          golang-go \
+          go-md2man \
+          iptables \
+          libassuan-dev \
+          libbtrfs-dev \
+          libc6-dev \
+          libdevmapper-dev \
+          libglib2.0-dev \
+          libgpgme-dev \
+          libgpg-error-dev \
+          libprotobuf-dev \
+          libprotobuf-c-dev \
+          libseccomp-dev \
+          libselinux1-dev \
+          libsystemd-dev \
+          pkg-config \
+          runc \
+          uidmap
+          
+    - name: Build
+      run: |
+          make BUILDTAGS="seccomp"
+          sudo make podman-release
+          
+    - uses: actions/upload-artifact@v3
+      with:
+        name: podman-release
+        path: ./podman-*.tar.gz
