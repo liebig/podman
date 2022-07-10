@@ -385,7 +385,7 @@ You need to specify multi option commands in the form of a json string.
 
 Set environment variables.
 
-This option allows arbitrary environment variables that are available for the process to be launched inside of the container. If an environment variable is specified without a value, Podman will check the host environment for a value and set the variable only if it is set on the host. If an environment variable ending in __*__ is specified, Podman will search the host environment for variables starting with the prefix and will add those variables to the container. If an environment variable with a trailing __*__ is specified, then a value must be supplied.
+This option allows arbitrary environment variables that are available for the process to be launched inside of the container. If an environment variable is specified without a value, Podman will check the host environment for a value and set the variable only if it is set on the host. As a special case, if an environment variable ending in __*__ is specified without a value, Podman will search the host environment for variables starting with the prefix and will add those variables to the container.
 
 See [**Environment**](#environment) note below for precedence and examples.
 
@@ -597,7 +597,7 @@ To specify multiple static MAC addresses per container, set multiple networks us
 
 #### **--memory**, **-m**=_number_[_unit_]
 
-Memory limit. A _unit_ can be **b** (bytes), **k** (kilobytes), **m** (megabytes), or **g** (gigabytes).
+Memory limit. A _unit_ can be **b** (bytes), **k** (kibibytes), **m** (mebibytes), or **g** (gibibytes).
 
 Allows you to constrain the memory available to a container. If the host
 supports swap memory, then the **-m** memory setting can be larger than physical
@@ -607,7 +607,7 @@ system's page size (the value would be very large, that's millions of trillions)
 
 #### **--memory-reservation**=_number_[_unit_]
 
-Memory soft limit. A _unit_ can be **b** (bytes), **k** (kilobytes), **m** (megabytes), or **g** (gigabytes).
+Memory soft limit. A _unit_ can be **b** (bytes), **k** (kibibytes), **m** (mebibytes), or **g** (gibibytes).
 
 After setting memory reservation, when the system detects memory contention
 or low memory, containers are forced to restrict their consumption to their
@@ -618,7 +618,7 @@ as memory limit.
 #### **--memory-swap**=_number_[_unit_]
 
 A limit value equal to memory plus swap.
-A _unit_ can be **b** (bytes), **k** (kilobytes), **m** (megabytes), or **g** (gigabytes).
+A _unit_ can be **b** (bytes), **k** (kibibytes), **m** (mebibytes), or **g** (gibibytes).
 
 Must be used with the **-m** (**--memory**) flag.
 The argument value should always be larger than that of
@@ -679,7 +679,7 @@ Current supported mount TYPEs are **bind**, **volume**, **image**, **tmpfs** and
 
 	      · bind-propagation: shared, slave, private, unbindable, rshared, rslave, runbindable, or rprivate(default). See also mount(2).
 
-	      . bind-nonrecursive: do not setup a recursive bind mount. By default it is recursive.
+	      . bind-nonrecursive: do not set up a recursive bind mount. By default it is recursive.
 
 	      . relabel: shared, private.
 
@@ -864,22 +864,27 @@ points, Apparmor/SELinux separation, and Seccomp filters are all disabled.
 
 Rootless containers cannot have more privileges than the account that launched them.
 
-#### **--publish**, **-p**=_ip_:_hostPort_:_containerPort_ | _ip_::_containerPort_ | _hostPort_:_containerPort_ | _containerPort_
+#### **--publish**, **-p**=[[_ip_:][_hostPort_]:]_containerPort_[/_protocol_]
 
 Publish a container's port, or range of ports, to the host.
 
 Both hostPort and containerPort can be specified as a range of ports.
-
-When specifying ranges for both, the number of container ports in the range must match the number of host ports in the range.
+When specifying ranges for both, the number of container ports in the
+range must match the number of host ports in the range.
 
 If host IP is set to 0.0.0.0 or not set at all, the port will be bound on all IPs on the host.
+
+By default, Podman will publish TCP ports. To publish a UDP port instead, give
+`udp` as protocol. To publish both TCP and UDP ports, set `--publish` twice,
+with `tcp`, and `udp` as protocols respectively. Rootful containers can also
+publish ports using the `sctp` protocol.
 
 Host port does not have to be specified (e.g. `podman run -p 127.0.0.1::80`).
 If it is not, the container port will be randomly assigned a port on the host.
 
-Use **podman port** to see the actual mapping: **podman port $CONTAINER $CONTAINERPORT**.
+Use **podman port** to see the actual mapping: `podman port $CONTAINER $CONTAINERPORT`.
 
-**Note:** if a container will be run within a pod, it is not necessary to publish the port for
+**Note:** If a container will be run within a pod, it is not necessary to publish the port for
 the containers in the pod. The port must only be published by the pod itself. Pod network
 stacks act like the network stack on the host - you have a variety of containers in the pod,
 and programs in the container, all sharing a single interface and IP address, and
@@ -900,13 +905,14 @@ When using this option, Podman will bind any exposed port to a random port on th
 within an ephemeral port range defined by */proc/sys/net/ipv4/ip_local_port_range*.
 To find the mapping between the host ports and the exposed ports, use **podman port**.
 
-#### **--pull**=**always**|**missing**|**never**
+#### **--pull**=**always**|**missing**|**never**|**newer**
 
-Pull image before running. The default is **missing**.
+Pull image policy. The default is **missing**.
 
-- **missing**: attempt to pull the latest image from the registries listed in registries.conf if a local image does not exist.Raise an error if the image is not in any listed registry and is not present locally.
-- **always**: Pull the image from the first registry it is found in as listed in registries.conf. Raise an error if not found in the registries, even if the image is present locally.
-- **never**: do not pull the image from the registry, use only the local version. Raise an error if the image is not present locally.
+- **always**: Always pull the image and throw an error if the pull fails.
+- **missing**: Pull the image only if it could not be found in the local containers storage.  Throw an error if no image could be found and the pull fails.
+- **never**: Never pull the image but use the one from the local containers storage.  Throw an error if no image could be found.
+- **newer**: Pull if the image on the registry is newer than the one in the local containers storage.  An image is considered to be newer when the digests are different.  Comparing the time stamps is prone to errors.  Pull errors are suppressed if a local image was found.
 
 #### **--quiet**, **-q**
 
@@ -914,11 +920,11 @@ Suppress output information when pulling images
 
 #### **--read-only**
 
-Mount the container's root filesystem as read only.
+Mount the container's root filesystem as read-only.
 
 By default a container will have its root filesystem writable allowing processes
 to write files anywhere. By specifying the **--read-only** flag, the container will have
-its root filesystem mounted as read only prohibiting any writes.
+its root filesystem mounted as read-only prohibiting any writes.
 
 #### **--read-only-tmpfs**
 
@@ -1046,14 +1052,14 @@ Note: Labeling can be disabled for all containers by setting label=false in the 
 - **proc-opts**=_OPTIONS_ : Comma-separated list of options to use for the /proc mount. More details
   for the possible mount options are specified in the **proc(5)** man page.
 
-- **unmask**=_ALL_ or _/path/1:/path/2_, or shell expanded paths (/proc/*): Paths to unmask separated by a colon. If set to **ALL**, it will unmask all the paths that are masked or made read only by default.
-  The default masked paths are **/proc/acpi, /proc/kcore, /proc/keys, /proc/latency_stats, /proc/sched_debug, /proc/scsi, /proc/timer_list, /proc/timer_stats, /sys/firmware, and /sys/fs/selinux.**.  The default paths that are read only are **/proc/asound**, **/proc/bus**, **/proc/fs**, **/proc/irq**, **/proc/sys**, **/proc/sysrq-trigger**, **/sys/fs/cgroup**.
+- **unmask**=_ALL_ or _/path/1:/path/2_, or shell expanded paths (/proc/*): Paths to unmask separated by a colon. If set to **ALL**, it will unmask all the paths that are masked or made read-only by default.
+  The default masked paths are **/proc/acpi, /proc/kcore, /proc/keys, /proc/latency_stats, /proc/sched_debug, /proc/scsi, /proc/timer_list, /proc/timer_stats, /sys/firmware, and /sys/fs/selinux.**.  The default paths that are read-only are **/proc/asound**, **/proc/bus**, **/proc/fs**, **/proc/irq**, **/proc/sys**, **/proc/sysrq-trigger**, **/sys/fs/cgroup**.
 
 Note: Labeling can be disabled for all containers by setting **label=false** in the **containers.conf**(5) file.
 
 #### **--shm-size**=_number_[_unit_]
 
-Size of _/dev/shm_. A _unit_ can be **b** (bytes), **k** (kilobytes), **m** (megabytes), or **g** (gigabytes).
+Size of _/dev/shm_. A _unit_ can be **b** (bytes), **k** (kibibytes), **m** (mebibytes), or **g** (gibibytes).
 If you omit the unit, the system uses bytes. If you omit the size entirely, the default is **64m**.
 When _size_ is **0**, there is no limit on the amount of memory used for IPC by the container.
 
@@ -1324,9 +1330,9 @@ The rootless option `--userns=keep-id` uses all the subuids and subgids of the u
 
 **host**: run in the user namespace of the caller. The processes running in the container will have the same privileges on the host as any other process launched by the calling user (default).
 
-**keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
+**keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is not allowed for containers created by the root user.
 
-**nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is ignored for containers created by the root user.
+**nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is not allowed for containers created by the root user.
 
 **ns:**_namespace_: run the container in the given existing user namespace.
 
@@ -1357,13 +1363,14 @@ The _options_ is a comma-separated list and can be: <sup>[[1]](#Footnote1)</sup>
 
 * **rw**|**ro**
 * **z**|**Z**
-* [**r**]**shared**|[**r**]**slave**|[**r**]**private**[**r**]**unbindable**
-* [**r**]**bind**
-* [**no**]**exec**
-* [**no**]**dev**
-* [**no**]**suid**
 * [**O**]
 * [**U**]
+* [**no**]**copy**
+* [**no**]**dev**
+* [**no**]**exec**
+* [**no**]**suid**
+* [**r**]**bind**
+* [**r**]**shared**|[**r**]**slave**|[**r**]**private**[**r**]**unbindable**
 
 The `CONTAINER-DIR` must be an absolute path such as `/src/docs`. The volume
 will be mounted into the container at this directory.
@@ -1473,14 +1480,12 @@ visible on host and vice versa. Making a volume **slave** enables only one
 way mount propagation and that is mounts done on host under that volume
 will be visible inside container but not the other way around. <sup>[[1]](#Footnote1)</sup>
 
-To control mount propagation property of volume one can use [**r**]**shared**,
-[**r**]**slave**, [**r**]**private** or [**r**]**unbindable** propagation flag.
-Propagation property can be specified only for bind mounted volumes and not for
-internal volumes or named volumes. For mount propagation to work source mount
-point (mount point where source dir is mounted on) has to have right propagation
-properties. For shared volumes, source mount point has to be shared. And for
-slave volumes, source mount has to be either shared or slave.
-<sup>[[1]](#Footnote1)</sup>
+To control mount propagation property of a volume one can use the [**r**]**shared**,
+[**r**]**slave**, [**r**]**private** or the [**r**]**unbindable** propagation flag.
+For mount propagation to work the source mount point (the mount point where source dir
+is mounted on) has to have the right propagation properties. For shared volumes, the
+source mount point has to be shared. And for slave volumes, the source mount point
+has to be either shared or slave. <sup>[[1]](#Footnote1)</sup>
 
 If you want to recursively mount a volume and all of its submounts into a
 container, then you can use the **rbind** option. By default the bind option is
@@ -1599,7 +1604,7 @@ content. Installing packages into _/usr_, for example. In production,
 applications seldom need to write to the image.  Container applications write
 to volumes if they need to write to file systems at all. Applications can be
 made more secure by running them in read-only mode using the **--read-only** switch.
-This protects the containers image from modification. Read only containers may
+This protects the containers image from modification. Read-only containers may
 still need to write temporary data. The best way to handle this is to mount
 tmpfs directories on _/run_ and _/tmp_.
 
@@ -1880,7 +1885,7 @@ $ podman run --uidmap 0:30000:7000 --gidmap 0:30000:7000 fedora echo hello
 
 Podman allows for the configuration of storage by changing the values
 in the _/etc/container/storage.conf_ or by using global options. This
-shows how to setup and use fuse-overlayfs for a one time run of busybox
+shows how to set up and use fuse-overlayfs for a one time run of busybox
 using global options.
 
 ```
@@ -1979,15 +1984,15 @@ in the following order of precedence (later entries override earlier entries):
 - **--env-file**: Any environment variables specified via env-files. If multiple files specified, then they override each other in order of entry.
 - **--env**: Any environment variables specified will override previous settings.
 
-Run containers and set the environment ending with a __*__ and a __*****__:
+Run containers and set the environment ending with a __*__.
+The trailing __*__ glob functionality is only active when no value is specified:
 
 ```
 $ export ENV1=a
-$ podman run --env ENV* alpine printenv ENV1
-a
-
-$ podman run --env ENV*****=b alpine printenv ENV*****
-b
+$ podman run --env 'ENV*' alpine env | grep ENV
+ENV1=a
+$ podman run --env 'ENV*=b' alpine env | grep ENV
+ENV*=b
 ```
 
 ## CONMON

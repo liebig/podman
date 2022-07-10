@@ -2,6 +2,7 @@ package compat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	api "github.com/containers/podman/v4/pkg/api/types"
 	docker "github.com/docker/docker/api/types"
 	"github.com/gorilla/schema"
-	"github.com/pkg/errors"
+	runccgroups "github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,7 +30,7 @@ func StatsContainer(w http.ResponseWriter, r *http.Request) {
 		Stream: true,
 	}
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
-		utils.Error(w, http.StatusBadRequest, errors.Wrapf(err, "failed to parse parameters for %s", r.URL.String()))
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
 		return
 	}
 	if query.Stream && query.OneShot { // mismatch. one-shot can only be passed with stream=false
@@ -44,21 +45,9 @@ func StatsContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the container isn't running, then let's not bother and return
-	// immediately.
-	state, err := ctnr.State()
-	if err != nil {
-		utils.InternalServerError(w, err)
-		return
-	}
-	if state != define.ContainerStateRunning {
-		utils.Error(w, http.StatusConflict, define.ErrCtrStateInvalid)
-		return
-	}
-
 	stats, err := ctnr.GetContainerStats(nil)
 	if err != nil {
-		utils.InternalServerError(w, errors.Wrapf(err, "failed to obtain Container %s stats", name))
+		utils.InternalServerError(w, fmt.Errorf("failed to obtain Container %s stats: %w", name, err))
 		return
 	}
 
@@ -70,7 +59,7 @@ func StatsContainer(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	// Setup JSON encoder for streaming.
+	// Set up JSON encoder for streaming.
 	coder.SetEscapeHTML(true)
 	var preRead time.Time
 	var preCPUStats CPUStats
@@ -144,17 +133,23 @@ streamLabel: // A label to flatten the scope
 			InstanceID: "",
 		}
 
+		cfg := ctnr.Config()
+		memoryLimit := cgroupStat.MemoryStats.Usage.Limit
+		if cfg.Spec.Linux != nil && cfg.Spec.Linux.Resources != nil && cfg.Spec.Linux.Resources.Memory != nil && *cfg.Spec.Linux.Resources.Memory.Limit > 0 {
+			memoryLimit = uint64(*cfg.Spec.Linux.Resources.Memory.Limit)
+		}
+
 		systemUsage, _ := cgroups.GetSystemCPUUsage()
 		s := StatsJSON{
 			Stats: Stats{
 				Read:    time.Now(),
 				PreRead: preRead,
 				PidsStats: docker.PidsStats{
-					Current: cgroupStat.Pids.Current,
+					Current: cgroupStat.PidsStats.Current,
 					Limit:   0,
 				},
 				BlkioStats: docker.BlkioStats{
-					IoServiceBytesRecursive: toBlkioStatEntry(cgroupStat.Blkio.IoServiceBytesRecursive),
+					IoServiceBytesRecursive: toBlkioStatEntry(cgroupStat.BlkioStats.IoServiceBytesRecursive),
 					IoServicedRecursive:     nil,
 					IoQueuedRecursive:       nil,
 					IoServiceTimeRecursive:  nil,
@@ -165,14 +160,14 @@ streamLabel: // A label to flatten the scope
 				},
 				CPUStats: CPUStats{
 					CPUUsage: docker.CPUUsage{
-						TotalUsage:        cgroupStat.CPU.Usage.Total,
-						PercpuUsage:       cgroupStat.CPU.Usage.PerCPU,
-						UsageInKernelmode: cgroupStat.CPU.Usage.Kernel,
-						UsageInUsermode:   cgroupStat.CPU.Usage.Total - cgroupStat.CPU.Usage.Kernel,
+						TotalUsage:        cgroupStat.CpuStats.CpuUsage.TotalUsage,
+						PercpuUsage:       cgroupStat.CpuStats.CpuUsage.PercpuUsage,
+						UsageInKernelmode: cgroupStat.CpuStats.CpuUsage.UsageInKernelmode,
+						UsageInUsermode:   cgroupStat.CpuStats.CpuUsage.TotalUsage - cgroupStat.CpuStats.CpuUsage.UsageInKernelmode,
 					},
 					CPU:         stats.CPU,
 					SystemUsage: systemUsage,
-					OnlineCPUs:  uint32(len(cgroupStat.CPU.Usage.PerCPU)),
+					OnlineCPUs:  uint32(len(cgroupStat.CpuStats.CpuUsage.PercpuUsage)),
 					ThrottlingData: docker.ThrottlingData{
 						Periods:          0,
 						ThrottledPeriods: 0,
@@ -181,11 +176,11 @@ streamLabel: // A label to flatten the scope
 				},
 				PreCPUStats: preCPUStats,
 				MemoryStats: docker.MemoryStats{
-					Usage:             cgroupStat.Memory.Usage.Usage,
-					MaxUsage:          cgroupStat.Memory.Usage.Limit,
+					Usage:             cgroupStat.MemoryStats.Usage.Usage,
+					MaxUsage:          cgroupStat.MemoryStats.Usage.Limit,
 					Stats:             nil,
 					Failcnt:           0,
-					Limit:             cgroupStat.Memory.Usage.Limit,
+					Limit:             memoryLimit,
 					Commit:            0,
 					CommitPeak:        0,
 					PrivateWorkingSet: 0,
@@ -222,7 +217,7 @@ streamLabel: // A label to flatten the scope
 	}
 }
 
-func toBlkioStatEntry(entries []cgroups.BlkIOEntry) []docker.BlkioStatEntry {
+func toBlkioStatEntry(entries []runccgroups.BlkioStatEntry) []docker.BlkioStatEntry {
 	results := make([]docker.BlkioStatEntry, len(entries))
 	for i, e := range entries {
 		bits, err := json.Marshal(e)

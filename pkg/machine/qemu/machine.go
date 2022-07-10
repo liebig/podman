@@ -5,9 +5,11 @@ package qemu
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"io/ioutil"
@@ -16,9 +18,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/containers/common/pkg/config"
@@ -28,8 +32,8 @@ import (
 	"github.com/containers/storage/pkg/homedir"
 	"github.com/digitalocean/go-qemu/qmp"
 	"github.com/docker/go-units"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -105,6 +109,9 @@ func (p *Provider) NewMachine(opts machine.InitOptions) (machine.VM, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := vm.setPIDSocket(); err != nil {
+		return nil, err
+	}
 	cmd := []string{execPath}
 	// Add memory
 	cmd = append(cmd, []string{"-m", strconv.Itoa(int(vm.Memory))}...)
@@ -132,12 +139,12 @@ func (p *Provider) NewMachine(opts machine.InitOptions) (machine.VM, error) {
 	cmd = append(cmd, []string{
 		"-device", "virtio-serial",
 		// qemu needs to establish the long name; other connections can use the symlink'd
-		"-chardev", "socket,path=" + vm.ReadySocket.Path + ",server=on,wait=off,id=" + vm.Name + "_ready",
-		"-device", "virtserialport,chardev=" + vm.Name + "_ready" + ",name=org.fedoraproject.port.0"}...)
+		// Note both id and chardev start with an extra "a" because qemu requires that it
+		// starts with an letter but users can also use numbers
+		"-chardev", "socket,path=" + vm.ReadySocket.Path + ",server=on,wait=off,id=a" + vm.Name + "_ready",
+		"-device", "virtserialport,chardev=a" + vm.Name + "_ready" + ",name=org.fedoraproject.port.0",
+		"-pidfile", vm.VMPidFilePath.GetPath()}...)
 	vm.CmdLine = cmd
-	if err := vm.setPIDSocket(); err != nil {
-		return nil, err
-	}
 	return vm, nil
 }
 
@@ -207,7 +214,7 @@ func migrateVM(configPath string, config []byte, vm *MachineVM) error {
 	vm.Rootful = old.Rootful
 	vm.UID = old.UID
 
-	// Backup the original config file
+	// Back up the original config file
 	if err := os.Rename(configPath, configPath+".orig"); err != nil {
 		return err
 	}
@@ -314,6 +321,7 @@ func (v *MachineVM) Init(opts machine.InitOptions) (bool, error) {
 		source := paths[0]
 		target := source
 		readonly := false
+		securityModel := "mapped-xattr"
 		if len(paths) > 1 {
 			target = paths[1]
 		}
@@ -321,18 +329,20 @@ func (v *MachineVM) Init(opts machine.InitOptions) (bool, error) {
 			options := paths[2]
 			volopts := strings.Split(options, ",")
 			for _, o := range volopts {
-				switch o {
-				case "rw":
+				switch {
+				case o == "rw":
 					readonly = false
-				case "ro":
+				case o == "ro":
 					readonly = true
+				case strings.HasPrefix(o, "security_model="):
+					securityModel = strings.Split(o, "=")[1]
 				default:
 					fmt.Printf("Unknown option: %s\n", o)
 				}
 			}
 		}
 		if volumeType == VolumeTypeVirtfs {
-			virtfsOptions := fmt.Sprintf("local,path=%s,mount_tag=%s,security_model=mapped-xattr", source, tag)
+			virtfsOptions := fmt.Sprintf("local,path=%s,mount_tag=%s,security_model=%s", source, tag, securityModel)
 			if readonly {
 				virtfsOptions += ",readonly"
 			}
@@ -430,12 +440,12 @@ func (v *MachineVM) Set(_ string, opts machine.SetOptions) ([]error, error) {
 		if v.Name != machine.DefaultMachineName {
 			suffix = " " + v.Name
 		}
-		return setErrors, errors.Errorf("cannot change settings while the vm is running, run 'podman machine stop%s' first", suffix)
+		return setErrors, fmt.Errorf("cannot change settings while the vm is running, run 'podman machine stop%s' first", suffix)
 	}
 
 	if opts.Rootful != nil && v.Rootful != *opts.Rootful {
 		if err := v.setRootful(*opts.Rootful); err != nil {
-			setErrors = append(setErrors, errors.Wrapf(err, "failed to set rootful option"))
+			setErrors = append(setErrors, fmt.Errorf("failed to set rootful option: %w", err))
 		} else {
 			v.Rootful = *opts.Rootful
 		}
@@ -453,7 +463,7 @@ func (v *MachineVM) Set(_ string, opts machine.SetOptions) ([]error, error) {
 
 	if opts.DiskSize != nil && v.DiskSize != *opts.DiskSize {
 		if err := v.resizeDisk(*opts.DiskSize, v.DiskSize); err != nil {
-			setErrors = append(setErrors, errors.Wrapf(err, "failed to resize disk"))
+			setErrors = append(setErrors, fmt.Errorf("failed to resize disk: %w", err))
 		} else {
 			v.DiskSize = *opts.DiskSize
 		}
@@ -484,19 +494,33 @@ func (v *MachineVM) Start(name string, _ machine.StartOptions) error {
 	if err := v.writeConfig(); err != nil {
 		return fmt.Errorf("writing JSON file: %w", err)
 	}
-	defer func() {
+	doneStarting := func() {
 		v.Starting = false
 		if err := v.writeConfig(); err != nil {
 			logrus.Errorf("Writing JSON file: %v", err)
 		}
+	}
+	defer doneStarting()
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		_, ok := <-c
+		if !ok {
+			return
+		}
+		doneStarting()
+		os.Exit(1)
 	}()
+	defer close(c)
+
 	if v.isIncompatible() {
 		logrus.Errorf("machine %q is incompatible with this release of podman and needs to be recreated, starting for recovery only", v.Name)
 	}
 
 	forwardSock, forwardState, err := v.startHostNetworking()
 	if err != nil {
-		return errors.Errorf("unable to start host networking: %q", err)
+		return fmt.Errorf("unable to start host networking: %q", err)
 	}
 
 	rtPath, err := getRuntimeDir()
@@ -550,34 +574,46 @@ func (v *MachineVM) Start(name string, _ machine.StartOptions) error {
 	files := []*os.File{dnr, dnw, dnw, fd}
 	attr.Files = files
 	logrus.Debug(v.CmdLine)
-	cmd := v.CmdLine
+	cmdLine := v.CmdLine
 
 	// Disable graphic window when not in debug mode
 	// Done in start, so we're not suck with the debug level we used on init
 	if !logrus.IsLevelEnabled(logrus.DebugLevel) {
-		cmd = append(cmd, "-display", "none")
+		cmdLine = append(cmdLine, "-display", "none")
 	}
 
-	_, err = os.StartProcess(v.CmdLine[0], cmd, attr)
+	stderrBuf := &bytes.Buffer{}
+
+	cmd := &exec.Cmd{
+		Args:       cmdLine,
+		Path:       cmdLine[0],
+		Stdin:      dnr,
+		Stdout:     dnw,
+		Stderr:     stderrBuf,
+		ExtraFiles: []*os.File{fd},
+	}
+	err = cmd.Start()
 	if err != nil {
 		// check if qemu was not found
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		// lookup qemu again maybe the path was changed, https://github.com/containers/podman/issues/13394
+		// look up qemu again maybe the path was changed, https://github.com/containers/podman/issues/13394
 		cfg, err := config.Default()
 		if err != nil {
 			return err
 		}
-		cmd[0], err = cfg.FindHelperBinary(QemuCommand, true)
+		cmdLine[0], err = cfg.FindHelperBinary(QemuCommand, true)
 		if err != nil {
 			return err
 		}
-		_, err = os.StartProcess(cmd[0], cmd, attr)
+		cmd.Path = cmdLine[0]
+		err = cmd.Start()
 		if err != nil {
-			return errors.Wrapf(err, "unable to execute %q", cmd)
+			return fmt.Errorf("unable to execute %q: %w", cmd, err)
 		}
 	}
+	defer cmd.Process.Release() //nolint:errcheck
 	fmt.Println("Waiting for VM ...")
 	socketPath, err := getRuntimeDir()
 	if err != nil {
@@ -591,6 +627,16 @@ func (v *MachineVM) Start(name string, _ machine.StartOptions) error {
 		conn, err = net.Dial("unix", filepath.Join(socketPath, "podman", v.Name+"_ready.sock"))
 		if err == nil {
 			break
+		}
+		// check if qemu is still alive
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(cmd.Process.Pid, &status, syscall.WNOHANG, nil)
+		if err != nil {
+			return fmt.Errorf("failed to read qemu process status: %w", err)
+		}
+		if pid > 0 {
+			// child exited
+			return fmt.Errorf("qemu exited unexpectedly with exit code %d, stderr: %s", status.ExitStatus(), stderrBuf.String())
 		}
 		time.Sleep(wait)
 		wait++
@@ -682,7 +728,7 @@ func (v *MachineVM) checkStatus(monitor *qmp.SocketMonitor) (machine.Status, err
 	}
 	b, err := monitor.Run(input)
 	if err != nil {
-		if errors.Cause(err) == os.ErrNotExist {
+		if errors.Is(err, os.ErrNotExist) {
 			return machine.Stopped, nil
 		}
 		return "", err
@@ -737,17 +783,17 @@ func (v *MachineVM) Stop(_ string, _ machine.StopOptions) error {
 	if _, err := os.Stat(v.PidFilePath.GetPath()); os.IsNotExist(err) {
 		return nil
 	}
-	pidString, err := v.PidFilePath.Read()
+	proxyPidString, err := v.PidFilePath.Read()
 	if err != nil {
 		return err
 	}
-	pidNum, err := strconv.Atoi(string(pidString))
+	proxyPid, err := strconv.Atoi(string(proxyPidString))
 	if err != nil {
 		return err
 	}
 
-	p, err := os.FindProcess(pidNum)
-	if p == nil && err != nil {
+	proxyProc, err := os.FindProcess(proxyPid)
+	if proxyProc == nil && err != nil {
 		return err
 	}
 
@@ -756,7 +802,7 @@ func (v *MachineVM) Stop(_ string, _ machine.StopOptions) error {
 		return err
 	}
 	// Kill the process
-	if err := p.Kill(); err != nil {
+	if err := proxyProc.Kill(); err != nil {
 		return err
 	}
 	// Remove the pidfile
@@ -770,24 +816,52 @@ func (v *MachineVM) Stop(_ string, _ machine.StopOptions) error {
 
 	if err := qmpMonitor.Disconnect(); err != nil {
 		// FIXME: this error should probably be returned
-		return nil // nolint: nilerr
+		return nil //nolint: nilerr
 	}
-
 	disconnected = true
-	waitInternal := 250 * time.Millisecond
-	for i := 0; i < 5; i++ {
-		state, err := v.State(false)
-		if err != nil {
-			return err
-		}
-		if state != machine.Running {
-			break
-		}
-		time.Sleep(waitInternal)
-		waitInternal *= 2
+
+	if err := v.ReadySocket.Delete(); err != nil {
+		return err
 	}
 
-	return v.ReadySocket.Delete()
+	if v.VMPidFilePath.GetPath() == "" {
+		// no vm pid file path means it's probably a machine created before we
+		// started using it, so we revert to the old way of waiting for the
+		// machine to stop
+		fmt.Println("Waiting for VM to stop running...")
+		waitInternal := 250 * time.Millisecond
+		for i := 0; i < 5; i++ {
+			state, err := v.State(false)
+			if err != nil {
+				return err
+			}
+			if state != machine.Running {
+				break
+			}
+			time.Sleep(waitInternal)
+			waitInternal *= 2
+		}
+		// after the machine stops running it normally takes about 1 second for the
+		// qemu VM to exit so we wait a bit to try to avoid issues
+		time.Sleep(2 * time.Second)
+		return nil
+	}
+
+	vmPidString, err := v.VMPidFilePath.Read()
+	if err != nil {
+		return err
+	}
+	vmPid, err := strconv.Atoi(strings.TrimSpace(string(vmPidString)))
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Waiting for VM to exit...")
+	for isProcessAlive(vmPid) {
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return nil
 }
 
 // NewQMPMonitor creates the monitor subsection of our vm
@@ -831,8 +905,14 @@ func (v *MachineVM) Remove(_ string, opts machine.RemoveOptions) (string, func()
 	if err != nil {
 		return "", nil, err
 	}
-	if state == machine.Running && !opts.Force {
-		return "", nil, errors.Errorf("running vm %q cannot be destroyed", v.Name)
+	if state == machine.Running {
+		if !opts.Force {
+			return "", nil, fmt.Errorf("running vm %q cannot be destroyed", v.Name)
+		}
+		err := v.Stop(v.Name, machine.StopOptions{})
+		if err != nil {
+			return "", nil, err
+		}
 	}
 
 	// Collect all the files that need to be destroyed
@@ -874,8 +954,11 @@ func (v *MachineVM) Remove(_ string, opts machine.RemoveOptions) (string, func()
 
 	// remove socket and pid file if any: warn at low priority if things fail
 	// Remove the pidfile
+	if err := v.VMPidFilePath.Delete(); err != nil {
+		logrus.Debugf("Error while removing VM pidfile: %v", err)
+	}
 	if err := v.PidFilePath.Delete(); err != nil {
-		logrus.Debugf("Error while removing pidfile: %v", err)
+		logrus.Debugf("Error while removing proxy pidfile: %v", err)
 	}
 	// Remove socket
 	if err := v.QMPMonitor.Address.Delete(); err != nil {
@@ -904,11 +987,16 @@ func (v *MachineVM) State(bypass bool) (machine.Status, error) {
 	}
 	// Check if we can dial it
 	if v.Starting && !bypass {
-		return "", nil
+		return machine.Starting, nil
 	}
 	monitor, err := qmp.NewSocketMonitor(v.QMPMonitor.Network, v.QMPMonitor.Address.GetPath(), v.QMPMonitor.Timeout)
 	if err != nil {
-		// FIXME: this error should probably be returned
+		// If an improper cleanup was done and the socketmonitor was not deleted,
+		// it can appear as though the machine state is not stopped.  Check for ECONNREFUSED
+		// almost assures us that the vm is stopped.
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return machine.Stopped, nil
+		}
 		return "", err
 	}
 	if err := monitor.Connect(); err != nil {
@@ -941,7 +1029,7 @@ func (v *MachineVM) SSH(_ string, opts machine.SSHOptions) error {
 		return err
 	}
 	if state != machine.Running {
-		return errors.Errorf("vm %q is not running", v.Name)
+		return fmt.Errorf("vm %q is not running", v.Name)
 	}
 
 	username := opts.Username
@@ -952,7 +1040,8 @@ func (v *MachineVM) SSH(_ string, opts machine.SSHOptions) error {
 	sshDestination := username + "@localhost"
 	port := strconv.Itoa(v.Port)
 
-	args := []string{"-i", v.IdentityPath, "-p", port, sshDestination, "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no"}
+	args := []string{"-i", v.IdentityPath, "-p", port, sshDestination, "-o", "UserKnownHostsFile=/dev/null",
+		"-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-o", "SetEnv=LC_ALL="}
 	if len(opts.Args) > 0 {
 		args = append(args, opts.Args...)
 	} else {
@@ -1051,6 +1140,7 @@ func getVMInfos() ([]*machine.ListResponse, error) {
 			listEntry.RemoteUsername = vm.RemoteUsername
 			listEntry.IdentityPath = vm.IdentityPath
 			listEntry.CreatedAt = vm.Created
+			listEntry.Starting = vm.Starting
 
 			if listEntry.CreatedAt.IsZero() {
 				listEntry.CreatedAt = time.Now()
@@ -1064,6 +1154,7 @@ func getVMInfos() ([]*machine.ListResponse, error) {
 			if err != nil {
 				return err
 			}
+			listEntry.Running = state == machine.Running
 
 			if !vm.LastUp.IsZero() { // this means we have already written a time to the config
 				listEntry.LastUp = vm.LastUp
@@ -1073,9 +1164,6 @@ func getVMInfos() ([]*machine.ListResponse, error) {
 				if err := vm.writeConfig(); err != nil {
 					return err
 				}
-			}
-			if state == machine.Running {
-				listEntry.Running = true
 			}
 
 			listed = append(listed, listEntry)
@@ -1105,10 +1193,10 @@ func (p *Provider) IsValidVMName(name string) (bool, error) {
 func (p *Provider) CheckExclusiveActiveVM() (bool, string, error) {
 	vms, err := getVMInfos()
 	if err != nil {
-		return false, "", errors.Wrap(err, "error checking VM active")
+		return false, "", fmt.Errorf("error checking VM active: %w", err)
 	}
 	for _, vm := range vms {
-		if vm.Running {
+		if vm.Running || vm.Starting {
 			return true, vm.Name, nil
 		}
 	}
@@ -1116,7 +1204,7 @@ func (p *Provider) CheckExclusiveActiveVM() (bool, string, error) {
 }
 
 // startHostNetworking runs a binary on the host system that allows users
-// to setup port forwarding to the podman virtual machine
+// to set up port forwarding to the podman virtual machine
 func (v *MachineVM) startHostNetworking() (string, apiForwardingState, error) {
 	cfg, err := config.Default()
 	if err != nil {
@@ -1157,7 +1245,10 @@ func (v *MachineVM) startHostNetworking() (string, apiForwardingState, error) {
 		fmt.Println(cmd)
 	}
 	_, err = os.StartProcess(cmd[0], cmd, attr)
-	return forwardSock, state, errors.Wrapf(err, "unable to execute: %q", cmd)
+	if err != nil {
+		return "", 0, fmt.Errorf("unable to execute: %q: %w", cmd, err)
+	}
+	return forwardSock, state, nil
 }
 
 func (v *MachineVM) setupAPIForwarding(cmd []string) ([]string, string, apiForwardingState) {
@@ -1283,13 +1374,19 @@ func (v *MachineVM) setPIDSocket() error {
 	if !rootless.IsRootless() {
 		rtPath = "/run"
 	}
-	pidFileName := fmt.Sprintf("%s.pid", v.Name)
 	socketDir := filepath.Join(rtPath, "podman")
-	pidFilePath, err := machine.NewMachineFile(filepath.Join(socketDir, pidFileName), &pidFileName)
+	vmPidFileName := fmt.Sprintf("%s_vm.pid", v.Name)
+	proxyPidFileName := fmt.Sprintf("%s_proxy.pid", v.Name)
+	vmPidFilePath, err := machine.NewMachineFile(filepath.Join(socketDir, vmPidFileName), &vmPidFileName)
 	if err != nil {
 		return err
 	}
-	v.PidFilePath = *pidFilePath
+	proxyPidFilePath, err := machine.NewMachineFile(filepath.Join(socketDir, proxyPidFileName), &proxyPidFileName)
+	if err != nil {
+		return err
+	}
+	v.VMPidFilePath = *vmPidFilePath
+	v.PidFilePath = *proxyPidFilePath
 	return nil
 }
 
@@ -1420,7 +1517,7 @@ func (v *MachineVM) update() error {
 	b, err := v.ConfigPath.Read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return errors.Wrap(machine.ErrNoSuchVM, v.Name)
+			return fmt.Errorf("%v: %w", v.Name, machine.ErrNoSuchVM)
 		}
 		return err
 	}
@@ -1471,16 +1568,22 @@ func (v *MachineVM) Inspect() (*machine.InspectInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	connInfo := new(machine.ConnectionConfig)
+	podmanSocket, err := v.forwardSocketPath()
+	if err != nil {
+		return nil, err
+	}
+	connInfo.PodmanSocket = podmanSocket
 	return &machine.InspectInfo{
-		ConfigPath: v.ConfigPath,
-		Created:    v.Created,
-		Image:      v.ImageConfig,
-		LastUp:     v.LastUp,
-		Name:       v.Name,
-		Resources:  v.ResourceConfig,
-		SSHConfig:  v.SSHConfig,
-		State:      state,
+		ConfigPath:     v.ConfigPath,
+		ConnectionInfo: *connInfo,
+		Created:        v.Created,
+		Image:          v.ImageConfig,
+		LastUp:         v.LastUp,
+		Name:           v.Name,
+		Resources:      v.ResourceConfig,
+		SSHConfig:      v.SSHConfig,
+		State:          state,
 	}, nil
 }
 
@@ -1490,7 +1593,7 @@ func (v *MachineVM) resizeDisk(diskSize uint64, oldSize uint64) error {
 	// only if the virtualdisk size is less than
 	// the given disk size
 	if diskSize < oldSize {
-		return errors.Errorf("new disk size must be larger than current disk size: %vGB", oldSize)
+		return fmt.Errorf("new disk size must be larger than current disk size: %vGB", oldSize)
 	}
 
 	// Find the qemu executable
@@ -1506,7 +1609,7 @@ func (v *MachineVM) resizeDisk(diskSize uint64, oldSize uint64) error {
 	resize.Stdout = os.Stdout
 	resize.Stderr = os.Stderr
 	if err := resize.Run(); err != nil {
-		return errors.Errorf("resizing image: %q", err)
+		return fmt.Errorf("resizing image: %q", err)
 	}
 
 	return nil
@@ -1619,4 +1722,16 @@ func (p *Provider) RemoveAndCleanMachines() error {
 		}
 	}
 	return prevErr
+}
+
+func isProcessAlive(pid int) bool {
+	err := unix.Kill(pid, syscall.Signal(0))
+	if err == nil || err == unix.EPERM {
+		return true
+	}
+	return false
+}
+
+func (p *Provider) VMType() string {
+	return vmtype
 }

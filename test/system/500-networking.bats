@@ -111,6 +111,10 @@ load helpers
                    $IMAGE nc -l -n -v -p $myport
         cid="$output"
 
+        # check that podman stores the network info correctly when a userns is used (#14465)
+        run_podman container inspect --format "{{.NetworkSettings.SandboxKey}}" $cid
+        assert "$output" =~ ".*/netns/netns-.*" "Netns path should be set"
+
         wait_for_output "listening on .*:$myport .*" $cid
 
         # emit random string, and check it
@@ -161,6 +165,9 @@ load helpers
 
     run_podman pod rm $pod_name
     is "$output" "$pid" "Only ID in output (no extra errors)"
+
+    # Clean up
+    run_podman rmi $(pause_image)
 }
 
 @test "podman run with slirp4ns assigns correct addresses to /etc/hosts" {
@@ -352,7 +359,7 @@ load helpers
     run curl -s $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt"
 
-    # cleanup the container
+    # clean up the container
     run_podman rm -t 0 -f $cid
 
     # test that we cannot remove the default network
@@ -542,7 +549,7 @@ load helpers
     run curl --max-time 3 -s $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt should still work"
 
-    # cleanup
+    # clean up
     run_podman rm -t 0 -f $cid $background_cid
     run_podman network rm -t 0 -f $netname $netname2
 }
@@ -615,7 +622,7 @@ load helpers
         run_podman rm -t 0 -f $cid
     done
 
-    # Cleanup network
+    # Clean up network
     run_podman network rm -t 0 -f $netname
 }
 
@@ -669,17 +676,21 @@ EOF
 
 @test "podman run port forward range" {
     for netmode in bridge slirp4netns:port_handler=slirp4netns slirp4netns:port_handler=rootlesskit; do
-        local port=$(random_free_port)
-        local end_port=$(( $port + 2 ))
-        local range="$port-$end_port:$port-$end_port"
+        local range=$(random_free_port_range 3)
+        # die() inside $(...) does not actually stop us.
+        assert "$range" != "" "Could not find free port range"
+
+        local port="${range%-*}"
+        local end_port="${range#*-}"
         local random=$(random_string)
 
-        run_podman run --network $netmode -p "$range" -d $IMAGE sleep inf
+        run_podman run --network $netmode -p "$range:$range" -d $IMAGE sleep inf
         cid="$output"
         for port in $(seq $port $end_port); do
             run_podman exec -d $cid nc -l -p $port -e /bin/cat
-            # -w 1 adds a 1 second timeout, for some reason ubuntus ncat doesn't close the connection on EOF,
-            # other options to change this are not portable across distros but -w seems to work
+            # -w 1 adds a 1 second timeout. For some reason, ubuntu's ncat
+            # doesn't close the connection on EOF, and other options to
+            # change this are not portable across distros. -w seems to work.
             run nc -w 1 127.0.0.1 $port <<<$random
             is "$output" "$random" "ncat got data back (netmode=$netmode port=$port)"
         done

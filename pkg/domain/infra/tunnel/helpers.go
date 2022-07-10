@@ -2,13 +2,14 @@ package tunnel
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/containers/podman/v4/libpod/define"
 	"github.com/containers/podman/v4/pkg/bindings/containers"
 	"github.com/containers/podman/v4/pkg/bindings/pods"
 	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/pkg/errors"
 )
 
 // FIXME: the `ignore` parameter is very likely wrong here as it should rather
@@ -20,7 +21,7 @@ func getContainersByContext(contextWithConnection context.Context, all, ignore b
 
 func getContainersAndInputByContext(contextWithConnection context.Context, all, ignore bool, namesOrIDs []string) ([]entities.ListContainer, []string, error) {
 	if all && len(namesOrIDs) > 0 {
-		return nil, nil, errors.New("cannot lookup containers and all")
+		return nil, nil, errors.New("cannot look up containers and all")
 	}
 	options := new(containers.ListOptions).WithAll(true).WithSync(true)
 	allContainers, err := containers.List(contextWithConnection, options)
@@ -69,7 +70,7 @@ func getContainersAndInputByContext(contextWithConnection context.Context, all, 
 		}
 
 		if !found && !ignore {
-			return nil, nil, errors.Wrapf(define.ErrNoSuchCtr, "unable to find container %q", nameOrID)
+			return nil, nil, fmt.Errorf("unable to find container %q: %w", nameOrID, define.ErrNoSuchCtr)
 		}
 	}
 	return filtered, rawInputs, nil
@@ -77,7 +78,7 @@ func getContainersAndInputByContext(contextWithConnection context.Context, all, 
 
 func getPodsByContext(contextWithConnection context.Context, all bool, namesOrIDs []string) ([]*entities.ListPodsReport, error) {
 	if all && len(namesOrIDs) > 0 {
-		return nil, errors.New("cannot lookup specific pods and all")
+		return nil, errors.New("cannot look up specific pods and all")
 	}
 
 	allPods, err := pods.List(contextWithConnection, nil)
@@ -102,7 +103,7 @@ func getPodsByContext(contextWithConnection context.Context, all bool, namesOrID
 		inspectData, err := pods.Inspect(contextWithConnection, nameOrID, nil)
 		if err != nil {
 			if errorhandling.Contains(err, define.ErrNoSuchPod) {
-				return nil, errors.Wrapf(define.ErrNoSuchPod, "unable to find pod %q", nameOrID)
+				return nil, fmt.Errorf("unable to find pod %q: %w", nameOrID, define.ErrNoSuchPod)
 			}
 			return nil, err
 		}
@@ -120,7 +121,7 @@ func getPodsByContext(contextWithConnection context.Context, all bool, namesOrID
 		}
 
 		if !found {
-			return nil, errors.Wrapf(define.ErrNoSuchPod, "unable to find pod %q", nameOrID)
+			return nil, fmt.Errorf("unable to find pod %q: %w", nameOrID, define.ErrNoSuchPod)
 		}
 	}
 	return filtered, nil

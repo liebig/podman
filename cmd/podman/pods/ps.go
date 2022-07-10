@@ -2,6 +2,7 @@ package pods
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -15,7 +16,6 @@ import (
 	"github.com/containers/podman/v4/cmd/podman/validate"
 	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/docker/go-units"
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -80,7 +80,7 @@ func pods(cmd *cobra.Command, _ []string) error {
 		for _, f := range inputFilters {
 			split := strings.SplitN(f, "=", 2)
 			if len(split) < 2 {
-				return errors.Errorf("filter input must be in the form of filter=value: %s is invalid", f)
+				return fmt.Errorf("filter input must be in the form of filter=value: %s is invalid", f)
 			}
 			psInput.Filters[split[0]] = append(psInput.Filters[split[0]], split[1])
 		}
@@ -211,7 +211,7 @@ func (l ListPodReporter) ID() string {
 }
 
 // Id returns the Pod id
-func (l ListPodReporter) Id() string { // nolint
+func (l ListPodReporter) Id() string { //nolint:revive,stylecheck
 	if noTrunc {
 		return l.ListPodsReport.Id
 	}
@@ -225,7 +225,7 @@ func (l ListPodReporter) InfraID() string {
 
 // InfraId returns the infra container id for the pod
 // depending on trunc
-func (l ListPodReporter) InfraId() string { // nolint
+func (l ListPodReporter) InfraId() string { //nolint:revive,stylecheck
 	if len(l.ListPodsReport.InfraId) == 0 {
 		return ""
 	}
@@ -276,7 +276,7 @@ func sortPodPsOutput(sortBy string, lprs []*entities.ListPodsReport) error {
 	case "status":
 		sort.Sort(podPsSortedStatus{lprs})
 	default:
-		return errors.Errorf("invalid option for --sort, options are: id, names, or number")
+		return errors.New("invalid option for --sort, options are: id, names, or number")
 	}
 	return nil
 }

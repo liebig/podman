@@ -21,7 +21,6 @@ import (
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/containers/storage/pkg/parsers"
-	"github.com/containers/storage/pkg/stringid"
 	"github.com/containers/storage/pkg/stringutils"
 	"github.com/containers/storage/pkg/system"
 	"github.com/containers/storage/types"
@@ -173,6 +172,7 @@ type Store interface {
 	GraphRoot() string
 	GraphDriverName() string
 	GraphOptions() []string
+	PullOptions() map[string]string
 	UIDMap() []idtools.IDMap
 	GIDMap() []idtools.IDMap
 
@@ -607,6 +607,7 @@ type store struct {
 	graphRoot       string
 	graphDriverName string
 	graphOptions    []string
+	pullOptions     map[string]string
 	uidMap          []idtools.IDMap
 	gidMap          []idtools.IDMap
 	autoUsernsUser  string
@@ -726,6 +727,7 @@ func GetStore(options types.StoreOptions) (Store, error) {
 		additionalGIDs:  nil,
 		usernsLock:      usernsLock,
 		disableVolatile: options.DisableVolatile,
+		pullOptions:     options.PullOptions,
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -774,6 +776,14 @@ func (s *store) GraphRoot() string {
 
 func (s *store) GraphOptions() []string {
 	return s.graphOptions
+}
+
+func (s *store) PullOptions() map[string]string {
+	cp := make(map[string]string, len(s.pullOptions))
+	for k, v := range s.pullOptions {
+		cp[k] = v
+	}
+	return cp
 }
 
 func (s *store) UIDMap() []idtools.IDMap {
@@ -1005,9 +1015,6 @@ func (s *store) PutLayer(id, parent string, names []string, mountLabel string, w
 	if err := rcstore.ReloadIfChanged(); err != nil {
 		return nil, -1, err
 	}
-	if id == "" {
-		id = stringid.GenerateRandomID()
-	}
 	if options == nil {
 		options = &LayerOptions{}
 	}
@@ -1086,10 +1093,6 @@ func (s *store) CreateLayer(id, parent string, names []string, mountLabel string
 }
 
 func (s *store) CreateImage(id string, names []string, layer, metadata string, options *ImageOptions) (*Image, error) {
-	if id == "" {
-		id = stringid.GenerateRandomID()
-	}
-
 	if layer != "" {
 		lstore, err := s.LayerStore()
 		if err != nil {
@@ -1268,9 +1271,6 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 	if err != nil {
 		return nil, err
 	}
-	if id == "" {
-		id = stringid.GenerateRandomID()
-	}
 
 	var imageTopLayer *Layer
 	imageID := ""
@@ -1326,14 +1326,14 @@ func (s *store) CreateContainer(id string, names []string, image, layer, metadat
 			}
 		}
 		if cimage == nil {
-			return nil, errors.Wrapf(ErrImageUnknown, "error locating image with ID %q", id)
+			return nil, errors.Wrapf(ErrImageUnknown, "error locating image with ID %q", image)
 		}
 		imageID = cimage.ID
 	}
 
 	if options.AutoUserNs {
 		var err error
-		options.UIDMap, options.GIDMap, err = s.getAutoUserNS(id, &options.AutoUserNsOpts, cimage)
+		options.UIDMap, options.GIDMap, err = s.getAutoUserNS(&options.AutoUserNsOpts, cimage)
 		if err != nil {
 			return nil, err
 		}

@@ -2,13 +2,17 @@ package generate
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/containers/podman/v4/libpod"
 	"github.com/containers/podman/v4/libpod/define"
 	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/pkg/errors"
+	"github.com/containers/podman/v4/pkg/specgenutil"
 	"github.com/sirupsen/logrus"
 )
 
@@ -55,6 +59,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (*libpod.Pod, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		spec.Pod = pod.ID()
 		opts = append(opts, rt.WithPod(pod))
 		spec.CgroupParent = pod.CgroupParent()
@@ -141,30 +146,33 @@ func MapSpec(p *specgen.PodSpecGenerator) (*specgen.SpecGenerator, error) {
 	case specgen.Bridge:
 		p.InfraContainerSpec.NetNS.NSMode = specgen.Bridge
 		logrus.Debugf("Pod using bridge network mode")
+	case specgen.Private:
+		p.InfraContainerSpec.NetNS.NSMode = specgen.Private
+		logrus.Debugf("Pod will use default network mode")
 	case specgen.Host:
 		logrus.Debugf("Pod will use host networking")
 		if len(p.InfraContainerSpec.PortMappings) > 0 ||
 			len(p.InfraContainerSpec.Networks) > 0 ||
 			p.InfraContainerSpec.NetNS.NSMode == specgen.NoNetwork {
-			return nil, errors.Wrapf(define.ErrInvalidArg, "cannot set host network if network-related configuration is specified")
+			return nil, fmt.Errorf("cannot set host network if network-related configuration is specified: %w", define.ErrInvalidArg)
 		}
 		p.InfraContainerSpec.NetNS.NSMode = specgen.Host
 	case specgen.Slirp:
 		logrus.Debugf("Pod will use slirp4netns")
-		if p.InfraContainerSpec.NetNS.NSMode != "host" {
+		if p.InfraContainerSpec.NetNS.NSMode != specgen.Host {
 			p.InfraContainerSpec.NetworkOptions = p.NetworkOptions
-			p.InfraContainerSpec.NetNS.NSMode = specgen.NamespaceMode("slirp4netns")
+			p.InfraContainerSpec.NetNS.NSMode = specgen.Slirp
 		}
 	case specgen.NoNetwork:
 		logrus.Debugf("Pod will not use networking")
 		if len(p.InfraContainerSpec.PortMappings) > 0 ||
 			len(p.InfraContainerSpec.Networks) > 0 ||
-			p.InfraContainerSpec.NetNS.NSMode == "host" {
-			return nil, errors.Wrapf(define.ErrInvalidArg, "cannot disable pod network if network-related configuration is specified")
+			p.InfraContainerSpec.NetNS.NSMode == specgen.Host {
+			return nil, fmt.Errorf("cannot disable pod network if network-related configuration is specified: %w", define.ErrInvalidArg)
 		}
 		p.InfraContainerSpec.NetNS.NSMode = specgen.NoNetwork
 	default:
-		return nil, errors.Errorf("pods presently do not support network mode %s", p.NetNS.NSMode)
+		return nil, fmt.Errorf("pods presently do not support network mode %s", p.NetNS.NSMode)
 	}
 
 	if len(p.InfraCommand) > 0 {
@@ -206,4 +214,89 @@ func MapSpec(p *specgen.PodSpecGenerator) (*specgen.SpecGenerator, error) {
 
 	p.InfraContainerSpec.Image = p.InfraImage
 	return p.InfraContainerSpec, nil
+}
+
+func PodConfigToSpec(rt *libpod.Runtime, spec *specgen.PodSpecGenerator, infraOptions *entities.ContainerCreateOptions, id string) (p *libpod.Pod, err error) {
+	pod, err := rt.LookupPod(id)
+	if err != nil {
+		return nil, err
+	}
+
+	infraSpec := &specgen.SpecGenerator{}
+	if pod.HasInfraContainer() {
+		infraID, err := pod.InfraContainerID()
+		if err != nil {
+			return nil, err
+		}
+		_, _, err = ConfigToSpec(rt, infraSpec, infraID)
+		if err != nil {
+			return nil, err
+		}
+
+		infraSpec.Hostname = ""
+		infraSpec.CgroupParent = ""
+		infraSpec.Pod = "" // remove old pod...
+		infraOptions.IsClone = true
+		infraOptions.IsInfra = true
+
+		n := infraSpec.Name
+		_, err = rt.LookupContainer(n + "-clone")
+		if err == nil { // if we found a ctr with this name, set it so the below switch can tell
+			n += "-clone"
+		}
+
+		switch {
+		case strings.Contains(n, "-clone"):
+			ind := strings.Index(n, "-clone") + 6
+			num, err := strconv.Atoi(n[ind:])
+			if num == 0 && err != nil { // clone1 is hard to get with this logic, just check for it here.
+				_, err = rt.LookupContainer(n + "1")
+				if err != nil {
+					infraSpec.Name = n + "1"
+					break
+				}
+			} else {
+				n = n[0:ind]
+			}
+			err = nil
+			count := num
+			for err == nil {
+				count++
+				tempN := n + strconv.Itoa(count)
+				_, err = rt.LookupContainer(tempN)
+			}
+			n += strconv.Itoa(count)
+			infraSpec.Name = n
+		default:
+			infraSpec.Name = n + "-clone"
+		}
+
+		err = specgenutil.FillOutSpecGen(infraSpec, infraOptions, []string{})
+		if err != nil {
+			return nil, err
+		}
+
+		out, err := CompleteSpec(context.Background(), rt, infraSpec)
+		if err != nil {
+			return nil, err
+		}
+
+		// Print warnings
+		if len(out) > 0 {
+			for _, w := range out {
+				fmt.Println("Could not properly complete the spec as expected:")
+				fmt.Fprintf(os.Stderr, "%s\n", w)
+			}
+		}
+
+		spec.InfraContainerSpec = infraSpec
+	}
+
+	// need to reset hostname, name etc of both pod and infra
+	spec.Hostname = ""
+
+	if len(spec.InfraContainerSpec.Image) > 0 {
+		spec.InfraImage = spec.InfraContainerSpec.Image
+	}
+	return pod, nil
 }

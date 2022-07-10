@@ -29,8 +29,6 @@ EPOCH_TEST_COMMIT ?= $(shell git merge-base $${DEST_BRANCH:-main} HEAD)
 HEAD ?= HEAD
 PROJECT := github.com/containers/podman
 GIT_BASE_BRANCH ?= origin/main
-GIT_BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
-GIT_BRANCH_CLEAN ?= $(shell echo $(GIT_BRANCH) | sed -e "s/[^[:alnum:]]/-/g")
 LIBPOD_INSTANCE := libpod_dev
 PREFIX ?= /usr/local
 BINDIR ?= ${PREFIX}/bin
@@ -53,10 +51,20 @@ BUILDTAGS ?= \
 	$(shell hack/libsubid_tag.sh) \
 	exclude_graphdriver_devicemapper \
 	seccomp
+ifeq ($(shell uname -s),FreeBSD)
+# Use bash for make's shell function - the default shell on FreeBSD
+# has a command builtin is not compatible with the way its used below
+SHELL := $(shell command -v bash)
+endif
 PYTHON ?= $(shell command -v python3 python|head -n1)
 PKG_MANAGER ?= $(shell command -v dnf yum|head -n1)
 # ~/.local/bin is not in PATH on all systems
 PRE_COMMIT = $(shell command -v bin/venv/bin/pre-commit ~/.local/bin/pre-commit pre-commit | head -n1)
+ifeq ($(shell uname -s),FreeBSD)
+SED=gsed
+else
+SED=sed
+endif
 
 # This isn't what we actually build; it's a superset, used for target
 # dependencies. Basically: all *.go and *.c files, except *_test.go,
@@ -80,18 +88,18 @@ FISHINSTALLDIR=${PREFIX}/share/fish/vendor_completions.d
 SELINUXOPT ?= $(shell test -x /usr/sbin/selinuxenabled && selinuxenabled && echo -Z)
 
 COMMIT_NO ?= $(shell git rev-parse HEAD 2> /dev/null || true)
-GIT_COMMIT ?= $(if $(shell git status --porcelain --untracked-files=no),${COMMIT_NO}-dirty,${COMMIT_NO})
+GIT_COMMIT ?= $(if $(shell git status --porcelain --untracked-files=no),$(call err_if_empty,COMMIT_NO)-dirty,$(COMMIT_NO))
 DATE_FMT = %s
 ifdef SOURCE_DATE_EPOCH
-	BUILD_INFO ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u "+$(DATE_FMT)")
+	BUILD_INFO ?= $(shell date -u -d "@$(call err_if_empty,SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u "+$(DATE_FMT)")
 else
 	BUILD_INFO ?= $(shell date "+$(DATE_FMT)")
 endif
 LIBPOD := ${PROJECT}/v4/libpod
 GOFLAGS ?= -trimpath
 LDFLAGS_PODMAN ?= \
-	-X $(LIBPOD)/define.gitCommit=$(GIT_COMMIT) \
-	-X $(LIBPOD)/define.buildInfo=$(BUILD_INFO) \
+	$(if $(GIT_COMMIT),-X $(LIBPOD)/define.gitCommit=$(GIT_COMMIT),) \
+	$(if $(BUILD_INFO),-X $(LIBPOD)/define.buildInfo=$(BUILD_INFO),) \
 	-X $(LIBPOD)/config._installPrefix=$(PREFIX) \
 	-X $(LIBPOD)/config._etcDir=$(ETCDIR) \
 	-X github.com/containers/common/pkg/config.additionalHelperBinariesDir=$(HELPER_BINARIES_DIR)\
@@ -104,10 +112,14 @@ LIBSECCOMP_COMMIT := v2.3.3
 # Rarely if ever should integration tests take more than 50min,
 # caller may override in special circumstances if needed.
 GINKGOTIMEOUT ?= -timeout=90m
+# By default, run test/e2e
+GINKGOWHAT ?= test/e2e/.
+# By default, run tests in parallel across 3 nodes.
+GINKGONODES ?= 3
 
 # Conditional required to produce empty-output if binary not built yet.
 RELEASE_VERSION = $(shell if test -x test/version/version; then test/version/version; fi)
-RELEASE_NUMBER = $(shell echo "$(RELEASE_VERSION)" | sed -e 's/^v\(.*\)/\1/')
+RELEASE_NUMBER = $(shell echo "$(call err_if_empty,RELEASE_VERSION)" | sed -e 's/^v\(.*\)/\1/')
 
 # If non-empty, logs all output from server during remote system testing
 PODMAN_SERVER_LOG ?=
@@ -138,7 +150,7 @@ err_if_empty = $(if $(strip $($(1))),$(strip $($(1))),$(error Required variable 
 CGO_ENABLED ?= 1
 # Default to the native OS type and architecture unless otherwise specified
 NATIVE_GOOS := $(shell env -u GOOS $(GO) env GOOS)
-GOOS ?= $(NATIVE_GOOS)
+GOOS ?= $(call err_if_empty,NATIVE_GOOS)
 # Default to the native architecture type
 NATIVE_GOARCH := $(shell env -u GOARCH $(GO) env GOARCH)
 GOARCH ?= $(NATIVE_GOARCH)
@@ -158,7 +170,7 @@ export GOOS GOARCH CGO_ENABLED BINSFX SRCBINDIR
 # Need to use CGO for mDNS resolution, but cross builds need CGO disabled
 # See https://github.com/golang/go/issues/12524 for details
 DARWIN_GCO := 0
-ifeq ($(NATIVE_GOOS),darwin)
+ifeq ($(call err_if_empty,NATIVE_GOOS),darwin)
 ifdef HOMEBREW_PREFIX
 	DARWIN_GCO := 1
 endif
@@ -182,15 +194,19 @@ default: all
 all: binaries docs
 
 .PHONY: binaries
+ifeq ($(shell uname -s),FreeBSD)
+binaries: podman podman-remote ## Build podman and podman-remote binaries
+else
 binaries: podman podman-remote rootlessport ## Build podman, podman-remote and rootlessport binaries
+endif
 
 # Extract text following double-# for targets, as their description for
 # the `help` target.  Otherwise These simple-substitutions are resolved
 # at reference-time (due to `=` and not `=:`).
 _HLP_TGTS_RX = '^[[:print:]]+:.*?\#\# .*$$'
 _HLP_TGTS_CMD = grep -E $(_HLP_TGTS_RX) $(MAKEFILE_LIST)
-_HLP_TGTS_LEN = $(shell $(_HLP_TGTS_CMD) | cut -d : -f 1 | wc -L)
-_HLPFMT = "%-$(_HLP_TGTS_LEN)s %s\n"
+_HLP_TGTS_LEN = $(shell $(call err_if_empty,_HLP_TGTS_CMD) | cut -d : -f 1 | wc -L)
+_HLPFMT = "%-$(call err_if_empty,_HLP_TGTS_LEN)s %s\n"
 .PHONY: help
 help: ## (Default) Print listing of key targets with their descriptions
 	@printf $(_HLPFMT) "Target:" "Description:"
@@ -227,11 +243,11 @@ test/checkseccomp/checkseccomp: $(wildcard test/checkseccomp/*.go)
 
 .PHONY: test/testvol/testvol
 test/testvol/testvol: $(wildcard test/testvol/*.go)
-	$(GOCMD) build $(BUILDFLAGS) $(GO_LDFLAGS) '$(LDFLAGS_PODMAN)' -o $@ ./test/testvol
+	$(GOCMD) build -o $@ ./test/testvol
 
-.PHONY: volume-plugin-test-image
+.PHONY: volume-plugin-test-img
 volume-plugin-test-img:
-	podman build -t quay.io/libpod/volume-plugin-test-img -f Containerfile-testvol .
+	./bin/podman build --network none -t quay.io/libpod/volume-plugin-test-img:$$(date +%Y%m%d) -f ./test/testvol/Containerfile .
 
 .PHONY: test/goecho/goecho
 test/goecho/goecho: $(wildcard test/goecho/*.go)
@@ -250,7 +266,7 @@ validate: lint .gitvalidation validate.completions man-page-check swagger-check 
 .PHONY: build-all-new-commits
 build-all-new-commits:
 	# Validate that all the commits build on top of $(GIT_BASE_BRANCH)
-	git rebase $(GIT_BASE_BRANCH) -x "$(MAKE)"
+	git rebase $(call err_if_empty,GIT_BASE_BRANCH) -x "$(MAKE)"
 
 .PHONY: vendor
 vendor:
@@ -295,7 +311,7 @@ $(SRCBINDIR)/podman$(BINSFX): $(SRCBINDIR) $(SOURCES) go.mod go.sum
 
 $(SRCBINDIR)/podman-remote-static: $(SRCBINDIR) $(SOURCES) go.mod go.sum
 	CGO_ENABLED=0 \
-	GOOS=$(GOOS) \
+	GOOS=linux \
 	GOARCH=$(GOARCH) \
 	$(GO) build \
 		$(BUILDFLAGS) \
@@ -425,7 +441,7 @@ $(MANPAGES): %: %.md .install.md2man docdir
 ### replaces "\" at the end of a line with two spaces
 ### this ensures that manpages are renderd correctly
 
-	@sed -e 's/\((podman[^)]*\.md\(#.*\)\?)\)//g' \
+	@$(SED) -e 's/\((podman[^)]*\.md\(#.*\)\?)\)//g' \
 	 -e 's/\[\(podman[^]]*\)\]/\1/g' \
 		 -e 's/\[\([^]]*\)](http[^)]\+)/\1/g' \
 	 -e 's;<\(/\)\?\(a\|a\s\+[^>]*\|sup\)>;;g' \
@@ -441,7 +457,7 @@ docs: $(MANPAGES) ## Generate documentation
 
 # docs/remote-docs.sh requires a locally executable 'podman-remote' binary
 # in addition to the target-archetecture binary (if any).
-podman-remote-%-docs: podman-remote-$(NATIVE_GOOS)
+podman-remote-%-docs: podman-remote-$(call err_if_empty,NATIVE_GOOS)
 	$(eval GOOS := $*)
 	$(MAKE) docs $(MANPAGES)
 	rm -rf docs/build/remote
@@ -512,7 +528,7 @@ test: localunit localintegration remoteintegration localsystem remotesystem  ## 
 .PHONY: ginkgo-run
 ginkgo-run:
 	ACK_GINKGO_RC=true ginkgo version
-	ACK_GINKGO_RC=true ginkgo -v $(TESTFLAGS) -tags "$(TAGS)" $(GINKGOTIMEOUT) -cover -flakeAttempts 3 -progress -trace -noColor -nodes 3 -debug test/e2e/. $(HACK)
+	ACK_GINKGO_RC=true ginkgo -v $(TESTFLAGS) -tags "$(TAGS)" $(GINKGOTIMEOUT) -cover -flakeAttempts 3 -progress -trace -noColor -nodes $(GINKGONODES) -debug $(GINKGOWHAT) $(HACK)
 
 .PHONY: ginkgo
 ginkgo:
@@ -527,6 +543,10 @@ localintegration: test-binaries ginkgo
 
 .PHONY: remoteintegration
 remoteintegration: test-binaries ginkgo-remote
+
+.PHONY: localmachine
+localmachine: test-binaries
+	$(MAKE) ginkgo-run GINKGONODES=1 GINKGOWHAT=pkg/machine/e2e/. HACK=
 
 .PHONY: localbenchmarks
 localbenchmarks: test-binaries
@@ -639,7 +659,7 @@ podman-release-%.tar.gz: test/version/version
 	$(eval SUBDIR := podman-v$(call err_if_empty,RELEASE_NUMBER))
 	$(eval _DSTARGS := "DESTDIR=$(TMPDIR)/$(SUBDIR)" "PREFIX=/usr")
 	$(eval GOARCH := $*)
-	mkdir -p "$(TMPDIR)/$(SUBDIR)"
+	mkdir -p "$(call err_if_empty,TMPDIR)/$(SUBDIR)"
 	$(MAKE) GOOS=$(GOOS) GOARCH=$(NATIVE_GOARCH) \
 		clean-binaries docs podman-remote-$(GOOS)-docs
 	if [[ "$(GOARCH)" != "$(NATIVE_GOARCH)" ]]; then \
@@ -660,7 +680,7 @@ podman-remote-release-%.zip: test/version/version ## Build podman-remote for %=$
 	$(eval GOOS := $(firstword $(subst _, ,$*)))
 	$(eval GOARCH := $(lastword $(subst _, ,$*)))
 	$(eval _GOPLAT := GOOS=$(call err_if_empty,GOOS) GOARCH=$(call err_if_empty,GOARCH))
-	mkdir -p "$(TMPDIR)/$(SUBDIR)"
+	mkdir -p "$(call err_if_empty,TMPDIR)/$(SUBDIR)"
 	$(MAKE) GOOS=$(GOOS) GOARCH=$(NATIVE_GOARCH) \
 		clean-binaries podman-remote-$(GOOS)-docs
 	if [[ "$(GOARCH)" != "$(NATIVE_GOARCH)" ]]; then \
@@ -679,8 +699,8 @@ podman-remote-release-%.zip: test/version/version ## Build podman-remote for %=$
 
 .PHONY: podman.msi
 podman.msi: test/version/version  ## Build podman-remote, package for installation on Windows
-	$(MAKE) podman-v$(RELEASE_NUMBER).msi
-podman-v$(RELEASE_NUMBER).msi: podman-remote-windows podman-remote-windows-docs podman-winpath win-sshproxy
+	$(MAKE) podman-v$(call err_if_empty,RELEASE_NUMBER).msi
+podman-v%.msi: test/version/version podman-remote-windows podman-remote-windows-docs podman-winpath win-sshproxy
 	$(eval DOCFILE := docs/build/remote/windows)
 	find $(DOCFILE) -print | \
 		wixl-heat --var var.ManSourceDir --component-group ManFiles \
@@ -715,7 +735,7 @@ package:  ## Build rpm packages
 # a full path to test installed podman or you risk to call another executable.
 .PHONY: package-install
 package-install: package  ## Install rpm packages
-	sudo ${PKG_MANAGER} -y install ${HOME}/rpmbuild/RPMS/*/*.rpm
+	sudo $(call err_if_empty,PKG_MANAGER) -y install ${HOME}/rpmbuild/RPMS/*/*.rpm
 	/usr/bin/podman version
 	/usr/bin/podman info  # will catch a broken conmon
 
@@ -741,7 +761,9 @@ install.bin:
 	install ${SELINUXOPT} -m 755 bin/podman $(DESTDIR)$(BINDIR)/podman
 	test -z "${SELINUXOPT}" || chcon --verbose --reference=$(DESTDIR)$(BINDIR)/podman bin/podman
 	install ${SELINUXOPT} -d -m 755 $(DESTDIR)$(LIBEXECPODMAN)
+ifneq ($(shell uname -s),FreeBSD)
 	install ${SELINUXOPT} -m 755 bin/rootlessport $(DESTDIR)$(LIBEXECPODMAN)/rootlessport
+endif
 	test -z "${SELINUXOPT}" || chcon --verbose --reference=$(DESTDIR)$(LIBEXECPODMAN)/rootlessport bin/rootlessport
 	install ${SELINUXOPT} -m 755 -d ${DESTDIR}${TMPFILESDIR}
 	install ${SELINUXOPT} -m 644 contrib/tmpfile/podman.conf ${DESTDIR}${TMPFILESDIR}/podman.conf
@@ -755,9 +777,9 @@ install.modules-load: # This should only be used by distros which might use ipta
 install.man:
 	install ${SELINUXOPT} -d -m 755 $(DESTDIR)$(MANDIR)/man1
 	install ${SELINUXOPT} -d -m 755 $(DESTDIR)$(MANDIR)/man5
-	install ${SELINUXOPT} -m 644 $(filter %.1,$(MANPAGES_DEST)) -t $(DESTDIR)$(MANDIR)/man1
-	install ${SELINUXOPT} -m 644 $(filter %.5,$(MANPAGES_DEST)) -t $(DESTDIR)$(MANDIR)/man5
-	install ${SELINUXOPT} -m 644 docs/source/markdown/links/*1 -t $(DESTDIR)$(MANDIR)/man1
+	install ${SELINUXOPT} -m 644 $(filter %.1,$(MANPAGES_DEST)) $(DESTDIR)$(MANDIR)/man1
+	install ${SELINUXOPT} -m 644 $(filter %.5,$(MANPAGES_DEST)) $(DESTDIR)$(MANDIR)/man5
+	install ${SELINUXOPT} -m 644 docs/source/markdown/links/*1 $(DESTDIR)$(MANDIR)/man1
 
 .PHONY: install.completions
 install.completions:
@@ -794,7 +816,7 @@ ifneq (,$(findstring systemd,$(BUILDTAGS)))
 PODMAN_UNIT_FILES = contrib/systemd/auto-update/podman-auto-update.service \
 		    contrib/systemd/system/podman.service \
 		    contrib/systemd/system/podman-restart.service \
-		    contrib/systemd/system/podman-play-kube@.service
+		    contrib/systemd/system/podman-kube@.service
 
 %.service: %.service.in
 	sed -e 's;@@PODMAN@@;$(BINDIR)/podman;g' $< >$@.tmp.$$ \
@@ -808,14 +830,14 @@ install.systemd: $(PODMAN_UNIT_FILES)
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman.socket ${DESTDIR}${USERSYSTEMDDIR}/podman.socket
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman.service ${DESTDIR}${USERSYSTEMDDIR}/podman.service
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-restart.service ${DESTDIR}${USERSYSTEMDDIR}/podman-restart.service
-	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-play-kube@.service ${DESTDIR}${USERSYSTEMDDIR}/podman-play-kube@.service
+	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-kube@.service ${DESTDIR}${USERSYSTEMDDIR}/podman-kube@.service
 	# System services
 	install ${SELINUXOPT} -m 644 contrib/systemd/auto-update/podman-auto-update.service ${DESTDIR}${SYSTEMDDIR}/podman-auto-update.service
 	install ${SELINUXOPT} -m 644 contrib/systemd/auto-update/podman-auto-update.timer ${DESTDIR}${SYSTEMDDIR}/podman-auto-update.timer
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman.socket ${DESTDIR}${SYSTEMDDIR}/podman.socket
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman.service ${DESTDIR}${SYSTEMDDIR}/podman.service
 	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-restart.service ${DESTDIR}${SYSTEMDDIR}/podman-restart.service
-	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-play-kube@.service ${DESTDIR}${SYSTEMDDIR}/podman-play-kube@.service
+	install ${SELINUXOPT} -m 644 contrib/systemd/system/podman-kube@.service ${DESTDIR}${SYSTEMDDIR}/podman-kube@.service
 	rm -f $(PODMAN_UNIT_FILES)
 else
 install.systemd:
@@ -831,7 +853,7 @@ install.tools: .install.ginkgo .install.golangci-lint .install.bats ## Install n
 
 .PHONY: .install.golangci-lint
 .install.golangci-lint:
-	VERSION=1.45.2 ./hack/install_golangci.sh
+	VERSION=1.46.2 ./hack/install_golangci.sh
 
 .PHONY: .install.md2man
 .install.md2man:

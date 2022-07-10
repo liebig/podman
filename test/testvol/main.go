@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -8,19 +9,25 @@ import (
 	"time"
 
 	"github.com/docker/go-plugins-helpers/volume"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "testvol",
-	Short: "testvol - volume plugin for Podman",
+	Use:               "testvol",
+	Short:             "testvol - volume plugin for Podman testing",
+	PersistentPreRunE: before,
+	SilenceUsage:      true,
+}
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "serve the volume plugin on the unix socket",
 	Long:  `Creates simple directory volumes using the Volume Plugin API for testing volume plugin functionality`,
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return startServer(config.sockName)
 	},
-	PersistentPreRunE: before,
 }
 
 // Configuration for the volume plugin
@@ -37,9 +44,12 @@ var config = cliConfig{
 }
 
 func init() {
-	rootCmd.Flags().StringVar(&config.sockName, "sock-name", config.sockName, "Name of unix socket for plugin")
-	rootCmd.Flags().StringVar(&config.path, "path", "", "Path to initialize state and mount points")
+	rootCmd.PersistentFlags().StringVar(&config.sockName, "sock-name", config.sockName, "Name of unix socket for plugin")
 	rootCmd.PersistentFlags().StringVar(&config.logLevel, "log-level", config.logLevel, "Log messages including and over the specified level: debug, info, warn, error, fatal, panic")
+
+	serveCmd.Flags().StringVar(&config.path, "path", "", "Path to initialize state and mount points")
+
+	rootCmd.AddCommand(serveCmd, createCmd, removeCmd, listCmd)
 }
 
 func before(cmd *cobra.Command, args []string) error {
@@ -59,11 +69,8 @@ func before(cmd *cobra.Command, args []string) error {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		logrus.Errorf("Running volume plugin: %v", err)
 		os.Exit(1)
 	}
-
-	os.Exit(0)
 }
 
 // startServer runs the HTTP server and responds to requests
@@ -73,16 +80,16 @@ func startServer(socketPath string) error {
 	if config.path == "" {
 		path, err := ioutil.TempDir("", "test_volume_plugin")
 		if err != nil {
-			return errors.Wrapf(err, "error getting directory for plugin")
+			return fmt.Errorf("error getting directory for plugin: %w", err)
 		}
 		config.path = path
 	} else {
 		pathStat, err := os.Stat(config.path)
 		if err != nil {
-			return errors.Wrapf(err, "unable to access requested plugin state directory")
+			return fmt.Errorf("unable to access requested plugin state directory: %w", err)
 		}
 		if !pathStat.IsDir() {
-			return errors.Errorf("cannot use %v as plugin state dir as it is not a directory", config.path)
+			return fmt.Errorf("cannot use %v as plugin state dir as it is not a directory", config.path)
 		}
 	}
 
@@ -91,7 +98,7 @@ func startServer(socketPath string) error {
 
 	server := volume.NewHandler(handle)
 	if err := server.ServeUnix(socketPath, 0); err != nil {
-		return errors.Wrapf(err, "error starting server")
+		return fmt.Errorf("error starting server: %w", err)
 	}
 	return nil
 }
@@ -140,7 +147,7 @@ func (d *DirDriver) Create(opts *volume.CreateRequest) error {
 	logrus.Infof("Hit Create() endpoint")
 
 	if _, exists := d.volumes[opts.Name]; exists {
-		return errors.Errorf("volume with name %s already exists", opts.Name)
+		return fmt.Errorf("volume with name %s already exists", opts.Name)
 	}
 
 	newVol := new(dirVol)
@@ -154,7 +161,7 @@ func (d *DirDriver) Create(opts *volume.CreateRequest) error {
 
 	volPath := filepath.Join(d.volumesPath, opts.Name)
 	if err := os.Mkdir(volPath, 0755); err != nil {
-		return errors.Wrapf(err, "error making volume directory")
+		return fmt.Errorf("error making volume directory: %w", err)
 	}
 	newVol.path = volPath
 
@@ -197,7 +204,7 @@ func (d *DirDriver) Get(req *volume.GetRequest) (*volume.GetResponse, error) {
 	vol, exists := d.volumes[req.Name]
 	if !exists {
 		logrus.Debugf("Did not find volume %s", req.Name)
-		return nil, errors.Errorf("no volume with name %s found", req.Name)
+		return nil, fmt.Errorf("no volume with name %s found", req.Name)
 	}
 
 	logrus.Debugf("Found volume %s", req.Name)
@@ -221,19 +228,19 @@ func (d *DirDriver) Remove(req *volume.RemoveRequest) error {
 	vol, exists := d.volumes[req.Name]
 	if !exists {
 		logrus.Debugf("Did not find volume %s", req.Name)
-		return errors.Errorf("no volume with name %s found", req.Name)
+		return fmt.Errorf("no volume with name %s found", req.Name)
 	}
 	logrus.Debugf("Found volume %s", req.Name)
 
 	if len(vol.mounts) > 0 {
 		logrus.Debugf("Cannot remove %s, is mounted", req.Name)
-		return errors.Errorf("volume %s is mounted and cannot be removed", req.Name)
+		return fmt.Errorf("volume %s is mounted and cannot be removed", req.Name)
 	}
 
 	delete(d.volumes, req.Name)
 
 	if err := os.RemoveAll(vol.path); err != nil {
-		return errors.Wrapf(err, "error removing mountpoint of volume %s", req.Name)
+		return fmt.Errorf("error removing mountpoint of volume %s: %w", req.Name, err)
 	}
 
 	logrus.Debugf("Removed volume %s", req.Name)
@@ -253,7 +260,7 @@ func (d *DirDriver) Path(req *volume.PathRequest) (*volume.PathResponse, error) 
 	vol, exists := d.volumes[req.Name]
 	if !exists {
 		logrus.Debugf("Cannot locate volume %s", req.Name)
-		return nil, errors.Errorf("no volume with name %s found", req.Name)
+		return nil, fmt.Errorf("no volume with name %s found", req.Name)
 	}
 
 	return &volume.PathResponse{
@@ -271,7 +278,7 @@ func (d *DirDriver) Mount(req *volume.MountRequest) (*volume.MountResponse, erro
 	vol, exists := d.volumes[req.Name]
 	if !exists {
 		logrus.Debugf("Cannot locate volume %s", req.Name)
-		return nil, errors.Errorf("no volume with name %s found", req.Name)
+		return nil, fmt.Errorf("no volume with name %s found", req.Name)
 	}
 
 	vol.mounts[req.ID] = true
@@ -291,13 +298,13 @@ func (d *DirDriver) Unmount(req *volume.UnmountRequest) error {
 	vol, exists := d.volumes[req.Name]
 	if !exists {
 		logrus.Debugf("Cannot locate volume %s", req.Name)
-		return errors.Errorf("no volume with name %s found", req.Name)
+		return fmt.Errorf("no volume with name %s found", req.Name)
 	}
 
 	mount := vol.mounts[req.ID]
 	if !mount {
 		logrus.Debugf("Volume %s is not mounted by %s", req.Name, req.ID)
-		return errors.Errorf("volume %s is not mounted by %s", req.Name, req.ID)
+		return fmt.Errorf("volume %s is not mounted by %s", req.Name, req.ID)
 	}
 
 	delete(vol.mounts, req.ID)

@@ -7,14 +7,14 @@ PODMAN=${PODMAN:-podman}
 PODMAN_TEST_IMAGE_REGISTRY=${PODMAN_TEST_IMAGE_REGISTRY:-"quay.io"}
 PODMAN_TEST_IMAGE_USER=${PODMAN_TEST_IMAGE_USER:-"libpod"}
 PODMAN_TEST_IMAGE_NAME=${PODMAN_TEST_IMAGE_NAME:-"testimage"}
-PODMAN_TEST_IMAGE_TAG=${PODMAN_TEST_IMAGE_TAG:-"20210610"}
+PODMAN_TEST_IMAGE_TAG=${PODMAN_TEST_IMAGE_TAG:-"20220615"}
 PODMAN_TEST_IMAGE_FQN="$PODMAN_TEST_IMAGE_REGISTRY/$PODMAN_TEST_IMAGE_USER/$PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG"
 PODMAN_TEST_IMAGE_ID=
 
 # Remote image that we *DO NOT* fetch or keep by default; used for testing pull
 # This has changed in 2021, from 0 through 3, various iterations of getting
 # multiarch to work. It should change only very rarely.
-PODMAN_NONLOCAL_IMAGE_TAG=${PODMAN_NONLOCAL_IMAGE_TAG:-"00000003"}
+PODMAN_NONLOCAL_IMAGE_TAG=${PODMAN_NONLOCAL_IMAGE_TAG:-"00000004"}
 PODMAN_NONLOCAL_IMAGE_FQN="$PODMAN_TEST_IMAGE_REGISTRY/$PODMAN_TEST_IMAGE_USER/$PODMAN_TEST_IMAGE_NAME:$PODMAN_NONLOCAL_IMAGE_TAG"
 
 # Because who wants to spell that out each time?
@@ -284,13 +284,44 @@ function random_free_port() {
 
     local port
     for port in $(shuf -i ${range}); do
-        if ! { exec {unused_fd}<> /dev/tcp/127.0.0.1/$port; } &>/dev/null; then
+        if port_is_free $port; then
             echo $port
             return
         fi
     done
 
     die "Could not find open port in range $range"
+}
+
+function random_free_port_range() {
+    local size=${1?Usage: random_free_port_range SIZE (as in, number of ports)}
+
+    local maxtries=10
+    while [[ $maxtries -gt 0 ]]; do
+        local firstport=$(random_free_port)
+        local lastport=
+        for i in $(seq 1 $((size - 1))); do
+            lastport=$((firstport + i))
+            if ! port_is_free $lastport; then
+                echo "# port $lastport is in use; trying another." >&3
+                lastport=
+                break
+            fi
+        done
+        if [[ -n "$lastport" ]]; then
+            echo "$firstport-$lastport"
+            return
+        fi
+
+        maxtries=$((maxtries - 1))
+    done
+
+    die "Could not find free port range with size $size"
+}
+
+function port_is_free() {
+     local port=${1?Usage: port_is_free PORT}
+    ! { exec {unused_fd}<> /dev/tcp/127.0.0.1/$port; } &>/dev/null
 }
 
 ###################

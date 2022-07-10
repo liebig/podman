@@ -103,6 +103,19 @@ spec:
 
 and as a result environment variable `FOO` will be set to `bar` for container `container-1`.
 
+### Systemd Integration
+
+A Kubernetes YAML can be executed in systemd via the `podman-kube@.service` systemd template.  The template's argument is the path to the YAML file.  Given a `workload.yaml` file in the home directory, it can be executed as follows:
+
+```
+$ escaped=$(systemd-escape ~/sysadmin.yaml)
+$ systemctl --user start podman-kube@$escaped.service
+$ systemctl --user is-active podman-kube@$escaped.service
+active
+```
+
+Note that the path to the YAML file must be escaped via `systemd-escape`.
+
 ## OPTIONS
 
 #### **--annotation**=*key=value*
@@ -276,9 +289,9 @@ Podman allocates unique ranges of UIDs and GIDs from the `containers` subordinat
 
 **host**: create a new namespace for the container.
 
-**keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
+**keep-id**: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is not allowed for containers created by the root user.
 
-**nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is ignored for containers created by the root user.
+**nomap**: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is not allowed for containers created by the root user.
 
 **ns:**_namespace_: run the pod in the given existing user namespace.
 

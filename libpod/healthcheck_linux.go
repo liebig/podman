@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/containers/podman/v4/pkg/errorhandling"
 	"github.com/containers/podman/v4/pkg/rootless"
 	"github.com/containers/podman/v4/pkg/systemd"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,7 +20,7 @@ func (c *Container) createTimer() error {
 	}
 	podman, err := os.Executable()
 	if err != nil {
-		return errors.Wrapf(err, "failed to get path for podman for a health check timer")
+		return fmt.Errorf("failed to get path for podman for a health check timer: %w", err)
 	}
 
 	var cmd = []string{}
@@ -35,15 +35,26 @@ func (c *Container) createTimer() error {
 
 	conn, err := systemd.ConnectToDBUS()
 	if err != nil {
-		return errors.Wrapf(err, "unable to get systemd connection to add healthchecks")
+		return fmt.Errorf("unable to get systemd connection to add healthchecks: %w", err)
 	}
 	conn.Close()
 	logrus.Debugf("creating systemd-transient files: %s %s", "systemd-run", cmd)
 	systemdRun := exec.Command("systemd-run", cmd...)
 	if output, err := systemdRun.CombinedOutput(); err != nil {
-		return errors.Errorf("%s", output)
+		return fmt.Errorf("%s", output)
 	}
 	return nil
+}
+
+// Wait for a message on the channel.  Throw an error if the message is not "done".
+func systemdOpSuccessful(c chan string) error {
+	msg := <-c
+	switch msg {
+	case "done":
+		return nil
+	default:
+		return fmt.Errorf("expected %q but received %q", "done", msg)
+	}
 }
 
 // startTimer starts a systemd timer for the healthchecks
@@ -53,11 +64,20 @@ func (c *Container) startTimer() error {
 	}
 	conn, err := systemd.ConnectToDBUS()
 	if err != nil {
-		return errors.Wrapf(err, "unable to get systemd connection to start healthchecks")
+		return fmt.Errorf("unable to get systemd connection to start healthchecks: %w", err)
 	}
 	defer conn.Close()
-	_, err = conn.StartUnitContext(context.Background(), fmt.Sprintf("%s.service", c.ID()), "fail", nil)
-	return err
+
+	startFile := fmt.Sprintf("%s.service", c.ID())
+	startChan := make(chan string)
+	if _, err := conn.StartUnitContext(context.Background(), startFile, "fail", startChan); err != nil {
+		return err
+	}
+	if err := systemdOpSuccessful(startChan); err != nil {
+		return fmt.Errorf("starting systemd health-check timer %q: %w", startFile, err)
+	}
+
+	return nil
 }
 
 // removeTransientFiles removes the systemd timer and unit files
@@ -68,33 +88,40 @@ func (c *Container) removeTransientFiles(ctx context.Context) error {
 	}
 	conn, err := systemd.ConnectToDBUS()
 	if err != nil {
-		return errors.Wrapf(err, "unable to get systemd connection to remove healthchecks")
+		return fmt.Errorf("unable to get systemd connection to remove healthchecks: %w", err)
 	}
 	defer conn.Close()
+
+	// Errors are returned at the very end. Let's make sure to stop and
+	// clean up as much as possible.
+	stopErrors := []error{}
+
+	// Stop the timer before the service to make sure the timer does not
+	// fire after the service is stopped.
+	timerChan := make(chan string)
 	timerFile := fmt.Sprintf("%s.timer", c.ID())
+	if _, err := conn.StopUnitContext(ctx, timerFile, "fail", timerChan); err != nil {
+		if !strings.HasSuffix(err.Error(), ".timer not loaded.") {
+			stopErrors = append(stopErrors, fmt.Errorf("removing health-check timer %q: %w", timerFile, err))
+		}
+	} else if err := systemdOpSuccessful(timerChan); err != nil {
+		stopErrors = append(stopErrors, fmt.Errorf("stopping systemd health-check timer %q: %w", timerFile, err))
+	}
+
+	// Reset the service before stopping it to make sure it's being removed
+	// on stop.
+	serviceChan := make(chan string)
 	serviceFile := fmt.Sprintf("%s.service", c.ID())
-
-	// If the service has failed (the healthcheck has failed), then
-	// the .service file is not removed on stopping the unit file. If
-	// we check the properties of the service, it will automatically
-	// reset the state.  But checking the state takes msecs vs usecs to
-	// blindly call reset.
 	if err := conn.ResetFailedUnitContext(ctx, serviceFile); err != nil {
-		logrus.Debugf("failed to reset unit file: %q", err)
+		logrus.Debugf("Failed to reset unit file: %q", err)
+	}
+	if _, err := conn.StopUnitContext(ctx, serviceFile, "fail", serviceChan); err != nil {
+		if !strings.HasSuffix(err.Error(), ".service not loaded.") {
+			stopErrors = append(stopErrors, fmt.Errorf("removing health-check service %q: %w", serviceFile, err))
+		}
+	} else if err := systemdOpSuccessful(serviceChan); err != nil {
+		stopErrors = append(stopErrors, fmt.Errorf("stopping systemd health-check service %q: %w", serviceFile, err))
 	}
 
-	// We want to ignore errors where the timer unit and/or service unit has already
-	// been removed. The error return is generic so we have to check against the
-	// string in the error
-	if _, err = conn.StopUnitContext(ctx, serviceFile, "fail", nil); err != nil {
-		if !strings.HasSuffix(err.Error(), ".service not loaded.") {
-			return errors.Wrapf(err, "unable to remove service file")
-		}
-	}
-	if _, err = conn.StopUnitContext(ctx, timerFile, "fail", nil); err != nil {
-		if strings.HasSuffix(err.Error(), ".timer not loaded.") {
-			return nil
-		}
-	}
-	return err
+	return errorhandling.JoinErrors(stopErrors)
 }

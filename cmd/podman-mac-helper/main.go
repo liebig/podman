@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +73,7 @@ func getUserInfo(name string) (string, string, string, error) {
 	entry := readCapped(output)
 	elements := strings.Split(entry, ":")
 	if len(elements) < 9 || elements[0] != name {
-		return "", "", "", errors.New("Could not lookup user")
+		return "", "", "", errors.New("Could not look up user")
 	}
 
 	return elements[0], elements[2], elements[8], nil
@@ -90,14 +90,14 @@ func getUser() (string, string, string, error) {
 
 	_, uid, home, err := getUserInfo(name)
 	if err != nil {
-		return "", "", "", fmt.Errorf("could not lookup user: %s", name)
+		return "", "", "", fmt.Errorf("could not look up user: %s", name)
 	}
 	id, err := strconv.Atoi(uid)
 	if err != nil {
 		return "", "", "", fmt.Errorf("invalid uid for user: %s", name)
 	}
 	if id == 0 {
-		return "", "", "", fmt.Errorf("unexpected root user")
+		return "", "", "", errors.New("unexpected root user")
 	}
 
 	return name, uid, home, nil

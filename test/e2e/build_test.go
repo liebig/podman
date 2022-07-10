@@ -85,7 +85,7 @@ var _ = Describe("Podman build", func() {
 	})
 
 	It("podman build with a secret from file and verify if secret file is not leaked into image", func() {
-		session := podmanTest.Podman([]string{"build", "-f", "build/secret-verify-leak/Containerfile.with-secret-verify-leak", "-t", "secret-test-leak", "--secret", "id=mysecret,src=build/secret.txt", "build/"})
+		session := podmanTest.Podman([]string{"build", "-f", "build/secret-verify-leak/Containerfile.with-secret-verify-leak", "-t", "secret-test-leak", "--secret", "id=mysecret,src=build/secret.txt", "build/secret-verify-leak"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 		Expect(session.OutputToString()).To(ContainSubstring("somesecret"))
@@ -176,6 +176,32 @@ var _ = Describe("Podman build", func() {
 		session = podmanTest.Podman([]string{"rm", "-a"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
+	})
+
+	It("podman build verify explicit cache use with squash-all and --layers", func() {
+		session := podmanTest.Podman([]string{"build", "--pull-never", "-f", "build/squash/Dockerfile.squash-c", "--squash-all", "--layers", "-t", "test-squash-d:latest", "build/squash"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		session = podmanTest.Podman([]string{"inspect", "--format", "{{.RootFS.Layers}}", "test-squash-d"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		// Check for one layers
+		Expect(strings.Fields(session.OutputToString())).To(HaveLen(1))
+
+		// Second build must use last squashed build from cache
+		session = podmanTest.Podman([]string{"build", "--pull-never", "-f", "build/squash/Dockerfile.squash-c", "--squash-all", "--layers", "-t", "test", "build/squash"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		// Test if entire build is used from cache
+		Expect(session.OutputToString()).To(ContainSubstring("Using cache"))
+
+		session = podmanTest.Podman([]string{"inspect", "--format", "{{.RootFS.Layers}}", "test-squash-d"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		// Check for one layers
+		Expect(strings.Fields(session.OutputToString())).To(HaveLen(1))
+
 	})
 
 	It("podman build Containerfile locations", func() {
@@ -529,7 +555,7 @@ subdir**`
 		dd := exec.Command("dd", "if=/dev/random", "of="+randomFile, "bs=1G", "count=1")
 		ddSession, err := Start(dd, GinkgoWriter, GinkgoWriter)
 		Expect(err).ToNot(HaveOccurred())
-		Eventually(ddSession).Should(Exit(0))
+		Eventually(ddSession, "10s", "1s").Should(Exit(0))
 
 		// make cwd as context root path
 		Expect(os.Chdir(contextDir)).ToNot(HaveOccurred())

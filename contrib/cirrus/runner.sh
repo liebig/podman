@@ -142,7 +142,10 @@ exec_container() {
     # Line-separated arguments which include shell-escaped special characters
     declare -a envargs
     while read -r var_val; do
-        envargs+=("-e $var_val")
+        # Pass "-e VAR" on the command line, not "-e VAR=value". Podman can
+        # do a much better job of transmitting the value than we can,
+        # especially when value includes spaces.
+        envargs+=("-e" "$(awk -F= '{print $1}' <<<$var_val)")
     done <<<"$(passthrough_envars)"
 
     # VM Images and Container images are built using (nearly) identical operations.
@@ -312,6 +315,11 @@ function _run_release() {
     if [[ -n "$dev" ]]; then
         die "Releases must never contain '-dev' in output of 'podman info' ($dev)"
     fi
+
+    commit=$(bin/podman info --format='{{.Version.GitCommit}}' | tr -d '[:space:]')
+    if [[ -z "$commit" ]]; then
+        die "Releases must contain a non-empty Version.GitCommit in 'podman info'"
+    fi
     msg "All OK"
 }
 
@@ -369,6 +377,13 @@ dotest() {
 
     make ${localremote}${testsuite} PODMAN_SERVER_LOG=$PODMAN_SERVER_LOG \
         |& logformatter
+}
+
+_run_machine() {
+    # TODO: This is a manually-triggered task, if that ever changes need to
+    # add something like:
+    # _bail_if_test_can_be_skipped docs test/e2e test/system test/python
+    make localmachine |& logformatter
 }
 
 # Optimization: will exit if the only PR diffs are under docs/ or tests/

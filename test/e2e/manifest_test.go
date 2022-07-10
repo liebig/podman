@@ -42,7 +42,6 @@ var _ = Describe("Podman manifest", func() {
 		podmanTest.Cleanup()
 		f := CurrentGinkgoTestDescription()
 		processTestResult(f)
-
 	})
 	It("create w/o image", func() {
 		session := podmanTest.Podman([]string{"manifest", "create", "foo"})
@@ -89,6 +88,27 @@ var _ = Describe("Podman manifest", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
 		Expect(session.OutputToString()).To(ContainSubstring(imageListARM64InstanceDigest))
+	})
+
+	It("add with new version", func() {
+		// Following test must pass for both podman and podman-remote
+		session := podmanTest.Podman([]string{"manifest", "create", "foo"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		id := strings.TrimSpace(string(session.Out.Contents()))
+
+		session = podmanTest.Podman([]string{"manifest", "inspect", id})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		session = podmanTest.Podman([]string{"manifest", "add", "--os-version", "7.7.7", "foo", imageListInstance})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		session = podmanTest.Podman([]string{"manifest", "inspect", "foo"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		Expect(session.OutputToString()).To(ContainSubstring("7.7.7"))
 	})
 
 	It("tag", func() {
@@ -274,10 +294,23 @@ var _ = Describe("Podman manifest", func() {
 
 	It("authenticated push", func() {
 		registryOptions := &podmanRegistry.Options{
-			Image: "docker-archive:" + imageTarPath(registry),
+			Image: "docker-archive:" + imageTarPath(REGISTRY_IMAGE),
 		}
+
+		// registry script invokes $PODMAN; make sure we define that
+		// so it can use our same networking options.
+		opts := strings.Join(podmanTest.MakeOptions(nil, false, false), " ")
+		if IsRemote() {
+			opts = strings.Join(getRemoteOptions(podmanTest, nil), " ")
+		}
+		os.Setenv("PODMAN", podmanTest.PodmanBinary+" "+opts)
 		registry, err := podmanRegistry.StartWithOptions(registryOptions)
 		Expect(err).To(BeNil())
+		defer func() {
+			err := registry.Stop()
+			Expect(err).To(BeNil())
+			os.Unsetenv("PODMAN")
+		}()
 
 		session := podmanTest.Podman([]string{"manifest", "create", "foo"})
 		session.WaitWithDefaultTimeout()
@@ -306,9 +339,6 @@ var _ = Describe("Podman manifest", func() {
 		push = podmanTest.Podman([]string{"manifest", "push", "--tls-verify=false", "--creds=podmantest:wrongpasswd", "foo", "localhost:" + registry.Port + "/credstest"})
 		push.WaitWithDefaultTimeout()
 		Expect(push).To(ExitWithError())
-
-		err = registry.Stop()
-		Expect(err).To(BeNil())
 	})
 
 	It("push with error", func() {
@@ -383,5 +413,33 @@ var _ = Describe("Podman manifest", func() {
 		session = podmanTest.Podman([]string{"image", "exists", imageName})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
+	})
+
+	It("manifest rm should not remove image and should be able to remove tagged manifest list", func() {
+		// manifest rm should fail with `image is not a manifest list`
+		session := podmanTest.Podman([]string{"manifest", "rm", ALPINE})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(125))
+		Expect(session.ErrorToString()).To(ContainSubstring("image is not a manifest list"))
+
+		manifestName := "testmanifest:sometag"
+		session = podmanTest.Podman([]string{"manifest", "create", manifestName})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		// verify if manifest exists
+		session = podmanTest.Podman([]string{"manifest", "exists", manifestName})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		// manifest rm should be able to remove tagged manifest list
+		session = podmanTest.Podman([]string{"manifest", "rm", manifestName})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		// verify that manifest should not exist
+		session = podmanTest.Podman([]string{"manifest", "exists", manifestName})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(1))
 	})
 })

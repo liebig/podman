@@ -34,12 +34,8 @@ echo $rand        |   0 | $rand
         # FIXME: The </dev/null is a hack, necessary because as of 2019-09
         #        podman-remote has a bug in which it silently slurps up stdin,
         #        including the output of parse_table (i.e. tests to be run).
-        run_podman $expected_rc run $IMAGE "$@" </dev/null
-
-        # FIXME: remove conditional once podman-remote issue #4096 is fixed
-        if ! is_remote; then
-            is "$output" "$expected_output" "podman run $cmd - output"
-        fi
+        run_podman $expected_rc run $IMAGE "$@"
+        is "$output" "$expected_output" "podman run $cmd - output"
 
         tests_run=$(expr $tests_run + 1)
     done < <(parse_table "$tests")
@@ -380,17 +376,7 @@ json-file | f
     while read driver do_check; do
         msg=$(random_string 15)
         run_podman run --name myctr --log-driver $driver $IMAGE echo $msg
-
-        # Simple output check
-        # Special case: 'json-file' emits a warning, the rest do not
-        # ...but with podman-remote the warning is on the server only
-        if [[ $do_check == 'f' ]] && ! is_remote; then      # 'f' for 'fallback'
-            is "${lines[0]}" ".* level=error msg=\"json-file logging specified but not supported. Choosing k8s-file logging instead\"" \
-               "Fallback warning emitted"
-            is "${lines[1]}" "$msg" "basic output sanity check (driver=$driver)"
-        else
-            is "$output" "$msg" "basic output sanity check (driver=$driver)"
-        fi
+        is "$output" "$msg" "basic output sanity check (driver=$driver)"
 
         # Simply confirm that podman preserved our argument as-is
         run_podman inspect --format '{{.HostConfig.LogConfig.Type}}' myctr
@@ -470,10 +456,10 @@ json-file | f
     # dependent, we pick an obscure zone (+1245) that is unlikely to
     # collide with any of our testing environments.
     #
-    # To get a reference timestamp we run 'date' locally; note the explicit
-    # strftime() format. We can't use --iso=seconds because GNU date adds
-    # a colon to the TZ offset (eg -07:00) whereas alpine does not (-0700).
-    run date --date=@1600000000 +%Y-%m-%dT%H:%M:%S%z
+    # To get a reference timestamp we run 'date' locally. This requires
+    # that GNU date output matches that of alpine; this seems to be true
+    # as of testimage:20220615.
+    run date --date=@1600000000 --iso=seconds
     expect="$output"
     TZ=Pacific/Chatham run_podman run --rm --tz=local $IMAGE date -Iseconds -r $testfile
     is "$output" "$expect" "podman run with --tz=local, matches host"
@@ -628,7 +614,8 @@ json-file | f
         run_podman image mount $IMAGE
         romount="$output"
 
-        run_podman run --rm --rootfs $romount echo "Hello world"
+        # FIXME FIXME FIXME: Remove :O once (if) #14504 is fixed!
+        run_podman run --rm --rootfs $romount:O echo "Hello world"
         is "$output" "Hello world"
 
         run_podman image unmount $IMAGE
@@ -743,7 +730,7 @@ EOF
     run_podman 125 run --device-cgroup-rule="x 7:* rmw" --rm $IMAGE
     is "$output" "Error: invalid device type in device-access-add: x"
     run_podman 125 run --device-cgroup-rule="a a:* rmw" --rm $IMAGE
-    is "$output" "Error: strconv.ParseInt: parsing \"a\": invalid syntax"
+    is "$output" "Error: strconv.ParseUint: parsing \"a\": invalid syntax"
 }
 
 @test "podman run closes stdin" {
@@ -853,6 +840,17 @@ EOF
     run_podman top $ctr huser,user
     run_podman rm -f -t0 $ctr
     run_podman rmi $test_image
+}
+
+@test "podman create --security-opt" {
+    run_podman create --security-opt no-new-privileges=true $IMAGE
+    run_podman rm $output
+    run_podman create --security-opt no-new-privileges:true $IMAGE
+    run_podman rm $output
+    run_podman create --security-opt no-new-privileges=false $IMAGE
+    run_podman rm $output
+    run_podman create --security-opt no-new-privileges $IMAGE
+    run_podman rm $output
 }
 
 # vim: filetype=sh

@@ -27,7 +27,6 @@ function teardown() {
         rm -f "$UNIT_FILE"
         systemctl daemon-reload
     fi
-    run_podman rmi -a
 
     basic_teardown
 }
@@ -53,9 +52,16 @@ function service_setup() {
 
 # Helper to stop a systemd service running a container
 function service_cleanup() {
-    local status=$1
     run systemctl stop "$SERVICE_NAME"
     assert $status -eq 0 "Error stopping systemd unit $SERVICE_NAME: $output"
+
+    # Regression test for #11304: confirm that unit stops into correct state
+    local expected_state="$1"
+    if [[ -n "$expected_state" ]]; then
+        run systemctl show --property=ActiveState "$SERVICE_NAME"
+        assert "$output" = "ActiveState=$expected_state" \
+               "state of service after systemctl stop"
+    fi
 
     run systemctl disable "$SERVICE_NAME"
     assert $status -eq 0 "Error disabling systemd unit $SERVICE_NAME: $output"
@@ -88,26 +94,28 @@ function service_cleanup() {
 @test "podman autoupdate local" {
     # Note that the entrypoint may be a JSON string which requires preserving the quotes (see #12477)
     cname=$(random_string)
-    run_podman create --name $cname --label "io.containers.autoupdate=local" --entrypoint '["top"]' $IMAGE
+
+    # Create a scratch image (copy of our regular one)
+    image_copy=base$(random_string | tr A-Z a-z)
+    run_podman tag $IMAGE $image_copy
+
+    # Create a container based on that
+    run_podman create --name $cname --label "io.containers.autoupdate=local" --entrypoint '["top"]' $image_copy
 
     # Start systemd service to run this container
     service_setup
 
     # Give container time to start; make sure output looks top-like
-    sleep 2
-    run_podman logs $cname
-    is "$output" ".*Load average:.*" "running container 'top'-like output"
-
-    # Save the container id before updating
-    run_podman ps --format '{{.ID}}'
+    wait_for_output 'Load average' $cname
 
     # Run auto-update and check that it restarted the container
-    run_podman commit --change "CMD=/bin/bash" $cname $IMAGE
+    run_podman commit --change "CMD=/bin/bash" $cname $image_copy
     run_podman auto-update
     is "$output" ".*$SERVICE_NAME.*" "autoupdate local restarted container"
 
     # All good. Stop service, clean up.
     service_cleanup
+    run_podman rmi $image_copy
 }
 
 # These tests can fail in dev. environment because of SELinux.
@@ -235,6 +243,7 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
 
     run_podman rm -f $cname
     run_podman pod rm -f $podname
+    run_podman rmi $(pause_image)
 }
 
 @test "podman generate - systemd template only used on --new" {
@@ -286,15 +295,17 @@ LISTEN_FDNAMES=listen_fdnames" | sort)
     run_podman network rm -f $netname
 }
 
-@test "podman-play-kube@.service template" {
+@test "podman-kube@.service template" {
     skip_if_remote "systemd units do not work with remote clients"
 
     # If running from a podman source directory, build and use the source
     # version of the play-kube-@ unit file
-    unit_name="podman-play-kube@.service"
+    unit_name="podman-kube@.service"
     unit_file="contrib/systemd/system/${unit_name}"
     if [[ -e ${unit_file}.in ]]; then
         echo "# [Building & using $unit_name from source]" >&3
+        # Force regenerating unit file (existing one may have /usr/bin path)
+        rm -f $unit_file
         BINDIR=$(dirname $PODMAN) make $unit_file
         cp $unit_file $UNIT_DIR/$unit_name
     fi
@@ -318,7 +329,7 @@ spec:
 EOF
 
     # Dispatch the YAML file
-    service_name="podman-play-kube@$(systemd-escape $yaml_source).service"
+    service_name="podman-kube@$(systemd-escape $yaml_source).service"
     systemctl start $service_name
     systemctl is-active $service_name
 
@@ -360,6 +371,33 @@ EOF
     systemctl stop $service_name
     run_podman 1 container exists $service_container
     run_podman 1 pod exists test_pod
+    run_podman rmi $(pause_image)
+    rm -f $UNIT_DIR/$unit_name
+}
+
+@test "podman-system-service containers survive service stop" {
+    skip_if_remote "N/A under podman-remote"
+
+    SERVICE_NAME=podman-service-$(random_string)
+    port=$(random_free_port)
+    URL=tcp://127.0.0.1:$port
+
+    systemd-run --unit=$SERVICE_NAME $PODMAN system service $URL --time=0
+    wait_for_port 127.0.0.1 $port
+
+    # Start a long-running container.
+    cname=keeps-running
+    run_podman --url $URL run -d --name $cname $IMAGE top -d 2
+
+    run_podman container inspect -l --format "{{.State.Running}}"
+    is "$output" "true" "This should never fail"
+
+    systemctl stop $SERVICE_NAME
+
+    run_podman container inspect $cname --format "{{.State.Running}}"
+    is "$output" "true" "Container is still running after podman server stops"
+
+    run_podman rm -f -t 0 $cname
 }
 
 # vim: filetype=sh

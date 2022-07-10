@@ -11,7 +11,6 @@ import (
 	"github.com/containers/podman/v4/cmd/podman/registry"
 	"github.com/containers/podman/v4/libpod/events"
 	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +19,7 @@ var (
 		Use:               "init [options] [NAME]",
 		Short:             "Initialize a virtual machine",
 		Long:              "initialize a virtual machine ",
+		PersistentPreRunE: rootlessOnly,
 		RunE:              initMachine,
 		Args:              cobra.MaximumNArgs(1),
 		Example:           `podman machine init myvm`,
@@ -109,7 +109,7 @@ func init() {
 	flags.BoolVar(&initOpts.Rootful, rootfulFlagName, false, "Whether this machine should prefer rootful container execution")
 }
 
-func initMachine(_ *cobra.Command, args []string) error {
+func initMachine(cmd *cobra.Command, args []string) error {
 	var (
 		err error
 		vm  machine.VM
@@ -119,12 +119,12 @@ func initMachine(_ *cobra.Command, args []string) error {
 	initOpts.Name = defaultMachineName
 	if len(args) > 0 {
 		if len(args[0]) > maxMachineNameSize {
-			return errors.Errorf("machine name %q must be %d characters or less", args[0], maxMachineNameSize)
+			return fmt.Errorf("machine name %q must be %d characters or less", args[0], maxMachineNameSize)
 		}
 		initOpts.Name = args[0]
 	}
 	if _, err := provider.LoadVMByName(initOpts.Name); err == nil {
-		return errors.Wrap(machine.ErrVMAlreadyExists, initOpts.Name)
+		return fmt.Errorf("%s: %w", initOpts.Name, machine.ErrVMAlreadyExists)
 	}
 	for idx, vol := range initOpts.Volumes {
 		initOpts.Volumes[idx] = os.ExpandEnv(vol)
@@ -147,17 +147,12 @@ func initMachine(_ *cobra.Command, args []string) error {
 	fmt.Println("Machine init complete")
 
 	if now {
-		err = vm.Start(initOpts.Name, machine.StartOptions{})
-		if err == nil {
-			fmt.Printf("Machine %q started successfully\n", initOpts.Name)
-			newMachineEvent(events.Start, events.Event{Name: initOpts.Name})
-		}
-	} else {
-		extra := ""
-		if initOpts.Name != defaultMachineName {
-			extra = " " + initOpts.Name
-		}
-		fmt.Printf("To start your machine run:\n\n\tpodman machine start%s\n\n", extra)
+		return start(cmd, args)
 	}
+	extra := ""
+	if initOpts.Name != defaultMachineName {
+		extra = " " + initOpts.Name
+	}
+	fmt.Printf("To start your machine run:\n\n\tpodman machine start%s\n\n", extra)
 	return err
 }

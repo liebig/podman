@@ -164,6 +164,16 @@ according to RFC4862.
 
 To specify multiple static MAC addresses per pod, set multiple networks using the **--network** option with a static MAC address specified for each using the `mac` mode for that option.
 
+#### **--memory**, **-m**=*limit*
+
+Memory limit (format: `<number>[<unit>]`, where unit = b (bytes), k (kibibytes), m (mebibytes), or g (gibibytes))
+
+Constrains the memory available to a container. If the host
+supports swap memory, then the **-m** memory setting can be larger than physical
+RAM. If a limit of 0 is specified (not using **-m**), the container's memory is
+not limited. The actual limit may be rounded up to a multiple of the operating
+system's page size (the value would be very large, that's millions of trillions).
+
 
 #### **--name**=*name*, **-n**
 
@@ -227,16 +237,30 @@ Set the PID mode for the pod. The default is to create a private PID namespace f
 
 Write the pod ID to the file.
 
-#### **--publish**=*port*, **-p**
+#### **--publish**, **-p**=[[_ip_:][_hostPort_]:]_containerPort_[/_protocol_]
 
-Publish a port or range of ports from the pod to the host.
+Publish a container's port, or range of ports, within this pod to the host.
 
-Format: `ip:hostPort:containerPort | ip::containerPort | hostPort:containerPort | containerPort`
 Both hostPort and containerPort can be specified as a range of ports.
-When specifying ranges for both, the number of container ports in the range must match the number of host ports in the range.
-Use `podman port` to see the actual mapping: `podman port CONTAINER $CONTAINERPORT`.
+When specifying ranges for both, the number of container ports in the
+range must match the number of host ports in the range.
 
-NOTE: This cannot be modified once the pod is created.
+If host IP is set to 0.0.0.0 or not set at all, the port will be bound on all IPs on the host.
+
+By default, Podman will publish TCP ports. To publish a UDP port instead, give
+`udp` as protocol. To publish both TCP and UDP ports, set `--publish` twice,
+with `tcp`, and `udp` as protocols respectively. Rootful containers can also
+publish ports using the `sctp` protocol.
+
+Host port does not have to be specified (e.g. `podman run -p 127.0.0.1::80`).
+If it is not, the container port will be randomly assigned a port on the host.
+
+Use **podman port** to see the actual mapping: `podman port $CONTAINER $CONTAINERPORT`.
+
+**Note:** You must not publish ports of containers in the pod individually,
+but only by the pod itself.
+
+**Note:** This cannot be modified once the pod is created.
 
 #### **--replace**
 
@@ -269,8 +293,8 @@ Note: Labeling can be disabled for all pods/containers by setting label=false in
 - `proc-opts=OPTIONS` : Comma-separated list of options to use for the /proc mount. More details for the
   possible mount options are specified in the **proc(5)** man page.
 
-- **unmask**=_ALL_ or _/path/1:/path/2_, or shell expanded paths (/proc/*): Paths to unmask separated by a colon. If set to **ALL**, it will unmask all the paths that are masked or made read only by default.
-  The default masked paths are **/proc/acpi, /proc/kcore, /proc/keys, /proc/latency_stats, /proc/sched_debug, /proc/scsi, /proc/timer_list, /proc/timer_stats, /sys/firmware, and /sys/fs/selinux.**  The default paths that are read only are **/proc/asound, /proc/bus, /proc/fs, /proc/irq, /proc/sys, /proc/sysrq-trigger, /sys/fs/cgroup**.
+- **unmask**=_ALL_ or _/path/1:/path/2_, or shell expanded paths (/proc/*): Paths to unmask separated by a colon. If set to **ALL**, it will unmask all the paths that are masked or made read-only by default.
+  The default masked paths are **/proc/acpi, /proc/kcore, /proc/keys, /proc/latency_stats, /proc/sched_debug, /proc/scsi, /proc/timer_list, /proc/timer_stats, /sys/firmware, and /sys/fs/selinux.**  The default paths that are read-only are **/proc/asound, /proc/bus, /proc/fs, /proc/irq, /proc/sys, /proc/sysrq-trigger, /sys/fs/cgroup**.
 
 Note: Labeling can be disabled for all containers by setting label=false in the **containers.conf** (`/etc/containers/containers.conf` or `$HOME/.config/containers/containers.conf`) file.
 
@@ -284,6 +308,12 @@ This boolean determines whether or not all containers entering the pod will use 
 
 Note: This options conflict with **--share=cgroup** since that would set the pod as the cgroup parent but enter the container into the same cgroupNS as the infra container.
 
+#### **--shm-size**=*size*
+
+Size of `/dev/shm` (format: `<number>[<unit>]`, where unit = b (bytes), k (kibibytes), m (mebibytes), or g (gibibytes))
+If the unit is omitted, the system uses bytes. If the size is omitted, the system uses `64m`.
+When size is `0`, there is no limit on the amount of memory used for IPC by the pod. This option conflicts with **--ipc=host** when running containers.
+
 #### **--subgidname**=*name*
 
 Name for GID map from the `/etc/subgid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--gidmap`.
@@ -291,6 +321,7 @@ Name for GID map from the `/etc/subgid` file. Using this flag will run the conta
 #### **--subuidname**=*name*
 
 Name for UID map from the `/etc/subuid` file. Using this flag will run the container with user namespace enabled. This flag conflicts with `--userns` and `--uidmap`.
+
 
 #### **--sysctl**=_name_=_value_
 
@@ -346,9 +377,17 @@ Valid _mode_ values are:
 
   - *host*: run in the user namespace of the caller. The processes running in the container will have the same privileges on the host as any other process launched by the calling user (default).
 
-  - *keep-id*: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is ignored for containers created by the root user.
+  - *keep-id*: creates a user namespace where the current rootless user's UID:GID are mapped to the same values in the container. This option is not allowed for containers created by the root user.
 
-  - *nomap*: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is ignored for containers created by the root user.
+  - *nomap*: creates a user namespace where the current rootless user's UID:GID are not mapped into the container. This option is not allowed for containers created by the root user.
+
+#### **--uts**=*mode*
+
+Set the UTS namespace mode for the pod. The following values are supported:
+
+- **host**: use the host's UTS namespace inside the pod.
+- **private**: create a new namespace for the pod (default).
+- **ns:[path]**: run the pod in the given existing UTS namespace.
 
 #### **--volume**, **-v**[=*[[SOURCE-VOLUME|HOST-DIR:]CONTAINER-DIR[:OPTIONS]]*]
 
@@ -467,12 +506,10 @@ will be visible inside container but not the other way around. <sup>[[1]](#Footn
 
 To control mount propagation property of a volume one can use the [**r**]**shared**,
 [**r**]**slave**, [**r**]**private** or the [**r**]**unbindable** propagation flag.
-Propagation property can be specified only for bind mounted volumes and not for
-internal volumes or named volumes. For mount propagation to work the source mount
-point (the mount point where source dir is mounted on) has to have the right propagation
-properties. For shared volumes, the source mount point has to be shared. And for
-slave volumes, the source mount point has to be either shared or slave.
-<sup>[[1]](#Footnote1)</sup>
+For mount propagation to work the source mount point (the mount point where source dir
+is mounted on) has to have the right propagation properties. For shared volumes, the
+source mount point has to be shared. And for slave volumes, the source mount point
+has to be either shared or slave. <sup>[[1]](#Footnote1)</sup>
 
 If you want to recursively mount a volume and all of its submounts into a
 pod, then you can use the `rbind` option. By default the bind option is

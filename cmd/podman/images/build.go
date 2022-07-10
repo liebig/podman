@@ -1,6 +1,7 @@
 package images
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -23,7 +24,6 @@ import (
 	"github.com/containers/podman/v4/cmd/podman/registry"
 	"github.com/containers/podman/v4/cmd/podman/utils"
 	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -191,15 +191,15 @@ func buildFlags(cmd *cobra.Command) {
 		_ = flags.MarkHidden("compress")
 		_ = flags.MarkHidden("volume")
 		_ = flags.MarkHidden("output")
+		_ = flags.MarkHidden("logsplit")
 	}
 }
 
 // build executes the build command.
 func build(cmd *cobra.Command, args []string) error {
 	if (cmd.Flags().Changed("squash") && cmd.Flags().Changed("layers")) ||
-		(cmd.Flags().Changed("squash-all") && cmd.Flags().Changed("layers")) ||
 		(cmd.Flags().Changed("squash-all") && cmd.Flags().Changed("squash")) {
-		return errors.New("cannot specify --squash, --squash-all and --layers options together")
+		return errors.New("cannot specify --squash with --layers and --squash-all with --squash")
 	}
 
 	if cmd.Flag("output").Changed && registry.IsRemote() {
@@ -222,7 +222,7 @@ func build(cmd *cobra.Command, args []string) error {
 		// The context directory could be a URL.  Try to handle that.
 		tempDir, subDir, err := buildahDefine.TempDirForURL("", "buildah", args[0])
 		if err != nil {
-			return errors.Wrapf(err, "error prepping temporary context directory")
+			return fmt.Errorf("error prepping temporary context directory: %w", err)
 		}
 		if tempDir != "" {
 			// We had to download it to a temporary directory.
@@ -237,7 +237,7 @@ func build(cmd *cobra.Command, args []string) error {
 			// Nope, it was local.  Use it as is.
 			absDir, err := filepath.Abs(args[0])
 			if err != nil {
-				return errors.Wrapf(err, "error determining path to directory %q", args[0])
+				return fmt.Errorf("error determining path to directory %q: %w", args[0], err)
 			}
 			contextDir = absDir
 		}
@@ -253,7 +253,7 @@ func build(cmd *cobra.Command, args []string) error {
 			}
 			absFile, err := filepath.Abs(containerFiles[i])
 			if err != nil {
-				return errors.Wrapf(err, "error determining path to file %q", containerFiles[i])
+				return fmt.Errorf("error determining path to file %q: %w", containerFiles[i], err)
 			}
 			contextDir = filepath.Dir(absFile)
 			containerFiles[i] = absFile
@@ -262,10 +262,10 @@ func build(cmd *cobra.Command, args []string) error {
 	}
 
 	if contextDir == "" {
-		return errors.Errorf("no context directory and no Containerfile specified")
+		return errors.New("no context directory and no Containerfile specified")
 	}
 	if !utils.IsDir(contextDir) {
-		return errors.Errorf("context must be a directory: %q", contextDir)
+		return fmt.Errorf("context must be a directory: %q", contextDir)
 	}
 	if len(containerFiles) == 0 {
 		if utils.FileExists(filepath.Join(contextDir, "Containerfile")) {
@@ -296,14 +296,15 @@ func build(cmd *cobra.Command, args []string) error {
 		if registry.IsRemote() {
 			// errors from server does not contain ExitCode
 			// so parse exit code from error message
-			remoteExitCode, parseErr := utils.ExitCodeFromBuildError(fmt.Sprint(errors.Cause(err)))
+			remoteExitCode, parseErr := utils.ExitCodeFromBuildError(err.Error())
 			if parseErr == nil {
 				exitCode = remoteExitCode
 			}
 		}
 
-		if ee, ok := (errors.Cause(err)).(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
+		exitError := &exec.ExitError{}
+		if errors.As(err, &exitError) {
+			exitCode = exitError.ExitCode()
 		}
 
 		registry.SetExitCode(exitCode)
@@ -356,7 +357,7 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 	}
 
 	if pullFlagsCount > 1 {
-		return nil, errors.Errorf("can only set one of 'pull' or 'pull-always' or 'pull-never'")
+		return nil, errors.New("can only set one of 'pull' or 'pull-always' or 'pull-never'")
 	}
 
 	// Allow for --pull, --pull=true, --pull=false, --pull=never, --pull=always
@@ -418,7 +419,13 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 	// Squash-all invoked, squash both new and old layers into one.
 	if c.Flags().Changed("squash-all") {
 		flags.Squash = true
-		flags.Layers = false
+		if !c.Flags().Changed("layers") {
+			// Buildah  supports using layers and --squash together
+			// after https://github.com/containers/buildah/pull/3674
+			// so podman must honor if user wants to still use layers
+			//  with --squash-all.
+			flags.Layers = false
+		}
 	}
 
 	var stdin io.Reader
@@ -440,22 +447,6 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 	nsValues, networkPolicy, err := parse.NamespaceOptions(c)
 	if err != nil {
 		return nil, err
-	}
-
-	// `buildah bud --layers=false` acts like `docker build --squash` does.
-	// That is all of the new layers created during the build process are
-	// condensed into one, any layers present prior to this build are retained
-	// without condensing.  `buildah bud --squash` squashes both new and old
-	// layers down into one.  Translate Podman commands into Buildah.
-	// Squash invoked, retain old layers, squash new layers into one.
-	if c.Flags().Changed("squash") && flags.Squash {
-		flags.Squash = false
-		flags.Layers = false
-	}
-	// Squash-all invoked, squash both new and old layers into one.
-	if c.Flags().Changed("squash-all") {
-		flags.Squash = true
-		flags.Layers = false
 	}
 
 	compression := buildahDefine.Gzip
@@ -487,7 +478,7 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 	case strings.HasPrefix(flags.Format, buildahDefine.DOCKER):
 		format = buildahDefine.Dockerv2ImageManifest
 	default:
-		return nil, errors.Errorf("unrecognized image type %q", flags.Format)
+		return nil, fmt.Errorf("unrecognized image type %q", flags.Format)
 	}
 
 	runtimeFlags := []string{}
@@ -510,12 +501,29 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 
 	decConfig, err := getDecryptConfig(flags.DecryptionKeys)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to obtain decrypt config")
+		return nil, fmt.Errorf("unable to obtain decrypt config: %w", err)
+	}
+
+	additionalBuildContext := make(map[string]*buildahDefine.AdditionalBuildContext)
+	if c.Flag("build-context").Changed {
+		for _, contextString := range flags.BuildContext {
+			av := strings.SplitN(contextString, "=", 2)
+			if len(av) > 1 {
+				parseAdditionalBuildContext, err := parse.GetAdditionalBuildContext(av[1])
+				if err != nil {
+					return nil, fmt.Errorf("while parsing additional build context: %w", err)
+				}
+				additionalBuildContext[av[0]] = &parseAdditionalBuildContext
+			} else {
+				return nil, fmt.Errorf("while parsing additional build context: %q, accepts value in the form of key=value", av)
+			}
+		}
 	}
 
 	opts := buildahDefine.BuildOptions{
 		AddCapabilities:         flags.CapAdd,
 		AdditionalTags:          tags,
+		AdditionalBuildContexts: additionalBuildContext,
 		AllPlatforms:            flags.AllPlatforms,
 		Annotations:             flags.Annotation,
 		Args:                    args,
@@ -525,6 +533,7 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 		Compression:             compression,
 		ConfigureNetwork:        networkPolicy,
 		ContextDirectory:        contextDir,
+		CPPFlags:                flags.CPPFlags,
 		DefaultMountsFilePath:   containerConfig.Containers.DefaultMountsFile,
 		Devices:                 flags.Devices,
 		DropCapabilities:        flags.CapDrop,
@@ -539,6 +548,8 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 		Labels:                  flags.Label,
 		Layers:                  flags.Layers,
 		LogRusage:               flags.LogRusage,
+		LogFile:                 flags.Logfile,
+		LogSplitByPlatform:      flags.LogSplitByPlatform,
 		Manifest:                flags.Manifest,
 		MaxPullPushRetries:      3,
 		NamespaceOptions:        nsValues,
@@ -570,7 +581,7 @@ func buildFlagsWrapperToOptions(c *cobra.Command, contextDir string, flags *buil
 	if flags.IgnoreFile != "" {
 		excludes, err := parseDockerignore(flags.IgnoreFile)
 		if err != nil {
-			return nil, errors.Wrapf(err, "unable to obtain decrypt config")
+			return nil, fmt.Errorf("unable to obtain decrypt config: %w", err)
 		}
 		opts.Excludes = excludes
 	}
@@ -589,7 +600,7 @@ func getDecryptConfig(decryptionKeys []string) (*encconfig.DecryptConfig, error)
 		// decryption
 		dcc, err := enchelpers.CreateCryptoConfig([]string{}, decryptionKeys)
 		if err != nil {
-			return nil, errors.Wrapf(err, "invalid decryption keys")
+			return nil, fmt.Errorf("invalid decryption keys: %w", err)
 		}
 		cc := encconfig.CombineCryptoConfigs([]encconfig.CryptoConfig{dcc})
 		decConfig = cc.DecryptConfig

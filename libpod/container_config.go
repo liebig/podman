@@ -194,7 +194,7 @@ type ContainerSecurityConfig struct {
 	// If not explicitly set, an unused random MLS label will be assigned by
 	// containers/storage (but only if SELinux is enabled).
 	MountLabel string `json:"MountLabel,omitempty"`
-	// LabelOpts are options passed in by the user to setup SELinux labels.
+	// LabelOpts are options passed in by the user to set up SELinux labels.
 	// These are used by the containers/storage library.
 	LabelOpts []string `json:"labelopts,omitempty"`
 	// User and group to use in the container. Can be specified as only user
@@ -243,12 +243,12 @@ type ContainerNetworkConfig struct {
 	// This cannot be set unless CreateNetNS is set.
 	// If not set, the container will be dynamically assigned an IP by CNI.
 	// Deprecated: Do no use this anymore, this is only for DB backwards compat.
-	StaticIP net.IP `json:"staticIP"`
+	StaticIP net.IP `json:"staticIP,omitempty"`
 	// StaticMAC is a static MAC to request for the container.
 	// This cannot be set unless CreateNetNS is set.
 	// If not set, the container will be dynamically assigned a MAC by CNI.
 	// Deprecated: Do no use this anymore, this is only for DB backwards compat.
-	StaticMAC types.HardwareAddr `json:"staticMAC"`
+	StaticMAC types.HardwareAddr `json:"staticMAC,omitempty"`
 	// PortMappings are the ports forwarded to the container's network
 	// namespace
 	// These are not used unless CreateNetNS is true
@@ -386,7 +386,7 @@ type ContainerMiscConfig struct {
 	IsService bool `json:"isService"`
 	// SdNotifyMode tells libpod what to do with a NOTIFY_SOCKET if passed
 	SdNotifyMode string `json:"sdnotifyMode,omitempty"`
-	// Systemd tells libpod to setup the container in systemd mode, a value of nil denotes false
+	// Systemd tells libpod to set up the container in systemd mode, a value of nil denotes false
 	Systemd *bool `json:"systemd,omitempty"`
 	// HealthCheckConfig has the health check command and related timings
 	HealthCheckConfig *manifest.Schema2HealthConfig `json:"healthcheck"`
@@ -412,6 +412,9 @@ type ContainerMiscConfig struct {
 	InitContainerType string `json:"init_container_type,omitempty"`
 	// PasswdEntry specifies arbitrary data to append to a file.
 	PasswdEntry string `json:"passwd_entry,omitempty"`
+	// MountAllDevices is an option to indicate whether a privileged container
+	// will mount all the host's devices
+	MountAllDevices bool `json:"mountAllDevices"`
 }
 
 // InfraInherit contains the compatible options inheritable from the infra container
@@ -421,7 +424,6 @@ type InfraInherit struct {
 	CapDrop            []string                 `json:"cap_drop,omitempty"`
 	HostDeviceList     []spec.LinuxDevice       `json:"host_device_list,omitempty"`
 	ImageVolumes       []*specgen.ImageVolume   `json:"image_volumes,omitempty"`
-	InfraResources     *spec.LinuxResources     `json:"resource_limits,omitempty"`
 	Mounts             []spec.Mount             `json:"mounts,omitempty"`
 	NoNewPrivileges    bool                     `json:"no_new_privileges,omitempty"`
 	OverlayVolumes     []*specgen.OverlayVolume `json:"overlay_volumes,omitempty"`
@@ -429,4 +431,10 @@ type InfraInherit struct {
 	SeccompProfilePath string                   `json:"seccomp_profile_path,omitempty"`
 	SelinuxOpts        []string                 `json:"selinux_opts,omitempty"`
 	Volumes            []*specgen.NamedVolume   `json:"volumes,omitempty"`
+	ShmSize            *int64                   `json:"shm_size"`
+}
+
+// IsDefaultShmSize determines if the user actually set the shm in the parent ctr or if it has been set to the default size
+func (inherit *InfraInherit) IsDefaultShmSize() bool {
+	return inherit.ShmSize == nil || *inherit.ShmSize == 65536000
 }

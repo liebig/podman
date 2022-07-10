@@ -2,7 +2,6 @@ package integration
 
 import (
 	"os"
-	"strings"
 
 	. "github.com/containers/podman/v4/test/utils"
 	"github.com/containers/storage/pkg/stringid"
@@ -94,7 +93,7 @@ var _ = Describe("Podman network connect and disconnect", func() {
 		exec2 := podmanTest.Podman([]string{"exec", "-it", "test", "cat", "/etc/resolv.conf"})
 		exec2.WaitWithDefaultTimeout()
 		Expect(exec2).Should(Exit(0))
-		Expect(strings.Contains(exec2.OutputToString(), ns)).To(BeTrue())
+		Expect(exec2.OutputToString()).To(ContainSubstring(ns))
 
 		dis := podmanTest.Podman([]string{"network", "disconnect", netName, "test"})
 		dis.WaitWithDefaultTimeout()
@@ -113,7 +112,12 @@ var _ = Describe("Podman network connect and disconnect", func() {
 		exec3 := podmanTest.Podman([]string{"exec", "-it", "test", "cat", "/etc/resolv.conf"})
 		exec3.WaitWithDefaultTimeout()
 		Expect(exec3).Should(Exit(0))
-		Expect(strings.Contains(exec3.OutputToString(), ns)).To(BeFalse())
+		Expect(exec3.OutputToString()).ToNot(ContainSubstring(ns))
+
+		// make sure stats still works https://github.com/containers/podman/issues/13824
+		stats := podmanTest.Podman([]string{"stats", "test", "--no-stream"})
+		stats.WaitWithDefaultTimeout()
+		Expect(stats).Should(Exit(0))
 	})
 
 	It("bad network name in connect should result in error", func() {
@@ -206,7 +210,7 @@ var _ = Describe("Podman network connect and disconnect", func() {
 		exec2 := podmanTest.Podman([]string{"exec", "-it", "test", "cat", "/etc/resolv.conf"})
 		exec2.WaitWithDefaultTimeout()
 		Expect(exec2).Should(Exit(0))
-		Expect(strings.Contains(exec2.OutputToString(), ns)).To(BeFalse())
+		Expect(exec2.OutputToString()).ToNot(ContainSubstring(ns))
 
 		ip := "10.11.100.99"
 		mac := "44:11:44:11:44:11"
@@ -235,7 +239,12 @@ var _ = Describe("Podman network connect and disconnect", func() {
 		exec3 := podmanTest.Podman([]string{"exec", "-it", "test", "cat", "/etc/resolv.conf"})
 		exec3.WaitWithDefaultTimeout()
 		Expect(exec3).Should(Exit(0))
-		Expect(strings.Contains(exec3.OutputToString(), ns)).To(BeTrue())
+		Expect(exec3.OutputToString()).To(ContainSubstring(ns))
+
+		// make sure stats works https://github.com/containers/podman/issues/13824
+		stats := podmanTest.Podman([]string{"stats", "test", "--no-stream"})
+		stats.WaitWithDefaultTimeout()
+		Expect(stats).Should(Exit(0))
 
 		// make sure no logrus errors are shown https://github.com/containers/podman/issues/9602
 		rm := podmanTest.Podman([]string{"rm", "--time=0", "-f", "test"})

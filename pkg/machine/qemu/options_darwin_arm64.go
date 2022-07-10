@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/containers/common/pkg/config"
 )
 
 var (
@@ -15,8 +17,8 @@ func (v *MachineVM) addArchOptions() []string {
 	opts := []string{
 		"-accel", "hvf",
 		"-accel", "tcg",
-		"-cpu", "cortex-a57",
-		"-M", "virt,highmem=off",
+		"-cpu", "host",
+		"-M", "virt,highmem=on",
 		"-drive", "file=" + getEdk2CodeFd("edk2-aarch64-code.fd") + ",if=pflash,format=raw,readonly=on",
 		"-drive", "file=" + ovmfDir + ",if=pflash,format=raw"}
 	return opts
@@ -38,6 +40,22 @@ func getOvmfDir(imagePath, vmName string) string {
 }
 
 /*
+ * When QEmu is installed in a non-default location in the system
+ * we can use the qemu-system-* binary path to figure the install
+ * location for Qemu and use it to look for edk2-code-fd
+ */
+func getEdk2CodeFdPathFromQemuBinaryPath() string {
+	cfg, err := config.Default()
+	if err == nil {
+		execPath, err := cfg.FindHelperBinary(QemuCommand, true)
+		if err == nil {
+			return filepath.Clean(filepath.Join(filepath.Dir(execPath), "..", "share", "qemu"))
+		}
+	}
+	return ""
+}
+
+/*
  *  QEmu can be installed in multiple locations on MacOS, especially on
  *  Apple Silicon systems.  A build from source will likely install it in
  *  /usr/local/bin, whereas Homebrew package management standard is to
@@ -45,6 +63,7 @@ func getOvmfDir(imagePath, vmName string) string {
  */
 func getEdk2CodeFd(name string) string {
 	dirs := []string{
+		getEdk2CodeFdPathFromQemuBinaryPath(),
 		"/opt/homebrew/opt/podman/libexec/share/qemu",
 		"/usr/local/share/qemu",
 		"/opt/homebrew/share/qemu",

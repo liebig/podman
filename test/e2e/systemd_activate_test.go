@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ var _ = Describe("Systemd activate", func() {
 	var tempDir string
 	var err error
 	var podmanTest *PodmanTestIntegration
+	var activate string
 
 	BeforeEach(func() {
 		tempDir, err = testUtils.CreateTempDirInTempDir()
@@ -31,17 +34,10 @@ var _ = Describe("Systemd activate", func() {
 
 		podmanTest = PodmanTestCreate(tempDir)
 		podmanTest.Setup()
-	})
 
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		processTestResult(CurrentGinkgoTestDescription())
-	})
-
-	It("stop podman.service", func() {
 		SkipIfRemote("Testing stopped service requires both podman and podman-remote binaries")
 
-		activate, err := exec.LookPath("systemd-socket-activate")
+		activate, err = exec.LookPath("systemd-socket-activate")
 		if err != nil {
 			activate = "/usr/bin/systemd-socket-activate"
 		}
@@ -54,14 +50,22 @@ var _ = Describe("Systemd activate", func() {
 		case err != nil:
 			Skip(err.Error())
 		}
+	})
 
+	AfterEach(func() {
+		podmanTest.Cleanup()
+		processTestResult(CurrentGinkgoTestDescription())
+	})
+
+	It("stop podman.service", func() {
 		// systemd-socket-activate does not support DNS lookups
 		host := "127.0.0.1"
 		port, err := podmanUtils.GetRandomPort()
 		Expect(err).ToNot(HaveOccurred())
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 		activateSession := testUtils.StartSystemExec(activate, []string{
-			fmt.Sprintf("--listen=%s:%d", host, port),
+			"--listen", addr,
 			podmanTest.PodmanBinary,
 			"--root=" + filepath.Join(tempDir, "server_root"),
 			"system", "service",
@@ -71,7 +75,7 @@ var _ = Describe("Systemd activate", func() {
 
 		// Curried functions for specialized podman calls
 		podmanRemote := func(args ...string) *testUtils.PodmanSession {
-			args = append([]string{"--url", fmt.Sprintf("tcp://%s:%d", host, port)}, args...)
+			args = append([]string{"--url", "tcp://" + addr}, args...)
 			return testUtils.SystemExec(podmanTest.RemotePodmanBinary, args)
 		}
 
@@ -102,5 +106,38 @@ var _ = Describe("Systemd activate", func() {
 		abiSession := podman("inspect", "--format={{.State.Running}}", containerName)
 		Expect(abiSession).To(Exit(0))
 		Expect(abiSession.OutputToString()).To(Equal("true"))
+	})
+
+	It("invalid systemd file descriptor", func() {
+		host := "127.0.0.1"
+		port, err := podmanUtils.GetRandomPort()
+		Expect(err).ToNot(HaveOccurred())
+
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+		// start systemd activation with datagram socket
+		activateSession := testUtils.StartSystemExec(activate, []string{
+			"--datagram", "--listen", addr,
+			podmanTest.PodmanBinary,
+			"--root=" + filepath.Join(tempDir, "server_root"),
+			"system", "service",
+			"--time=0",
+		})
+		Expect(activateSession.Exited).ShouldNot(Receive(), "Failed to start podman service")
+
+		// we have to wait for systemd-socket-activate to become ready
+		time.Sleep(1 * time.Second)
+
+		// now dial the socket to start podman
+		conn, err := net.Dial("udp", addr)
+		Expect(err).ToNot(HaveOccurred())
+		defer conn.Close()
+		_, err = conn.Write([]byte("test"))
+		Expect(err).ToNot(HaveOccurred())
+
+		// wait for podman to exit
+		activateSession.Wait(10)
+		Expect(activateSession).To(Exit(125))
+		Expect(activateSession.ErrorToString()).To(ContainSubstring("Error: unexpected fd received from systemd: cannot listen on it"))
 	})
 })

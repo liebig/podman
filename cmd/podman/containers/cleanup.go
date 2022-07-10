@@ -1,6 +1,7 @@
 package containers
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
@@ -9,7 +10,6 @@ import (
 	"github.com/containers/podman/v4/cmd/podman/utils"
 	"github.com/containers/podman/v4/cmd/podman/validate"
 	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +23,7 @@ var (
 	cleanupCommand = &cobra.Command{
 		Annotations: map[string]string{registry.EngineMode: registry.ABIMode},
 		Use:         "cleanup [options] CONTAINER [CONTAINER...]",
-		Short:       "Cleanup network and mountpoints of one or more containers",
+		Short:       "Clean up network and mountpoints of one or more containers",
 		Long:        cleanupDescription,
 		RunE:        cleanup,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -65,11 +65,11 @@ func cleanup(cmd *cobra.Command, args []string) error {
 	if cleanupOptions.Exec != "" {
 		switch {
 		case cleanupOptions.All:
-			return errors.Errorf("exec and all options conflict")
+			return errors.New("exec and all options conflict")
 		case len(args) > 1:
-			return errors.Errorf("cannot use exec option when more than one container is given")
+			return errors.New("cannot use exec option when more than one container is given")
 		case cleanupOptions.RemoveImage:
-			return errors.Errorf("exec and rmi options conflict")
+			return errors.New("exec and rmi options conflict")
 		}
 	}
 

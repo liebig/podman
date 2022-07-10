@@ -38,10 +38,12 @@ function _require_crun() {
 
 @test "rootful pod with custom ID mapping" {
     skip_if_rootless "does not work rootless - rootful feature"
-    skip_if_remote "remote --uidmap is broken (see #14233)"
     random_pod_name=$(random_string 30)
     run_podman pod create --uidmap 0:200000:5000 --name=$random_pod_name
     run_podman pod start $random_pod_name
+    run_podman pod inspect --format '{{.InfraContainerID}}' $random_pod_name
+    run podman inspect --format '{{.HostConfig.IDMappings.UIDMap}}' $output
+    is "$output" ".*0:200000:5000" "UID Map Successful"
 
     # Remove the pod and the pause image
     run_podman pod rm $random_pod_name
@@ -109,15 +111,30 @@ EOF
 }
 
 @test "podman userns=nomap" {
-    skip_if_not_rootless "--userns=nomap only works in rootless mode"
-    ns_user=$(id -un)
-    baseuid=$(egrep "${ns_user}:" /etc/subuid | cut -f2 -d:)
-    test ! -z ${baseuid} ||  skip "no IDs allocated for user ${ns_user}"
+    if is_rootless; then
+        ns_user=$(id -un)
+        baseuid=$(egrep "${ns_user}:" /etc/subuid | cut -f2 -d:)
+        test ! -z ${baseuid} ||  skip "no IDs allocated for user ${ns_user}"
 
-    test_name="test_$(random_string 12)"
-    run_podman run -d --userns=nomap $IMAGE sleep 100
-    cid=${output}
-    run_podman top ${cid} huser
-    is "${output}" "HUSER.*${baseuid}" "Container should start with baseuid from /etc/subuid not user UID"
-    run_podman rm -t 0 --force ${cid}
+        test_name="test_$(random_string 12)"
+        run_podman run -d --userns=nomap $IMAGE sleep 100
+        cid=${output}
+        run_podman top ${cid} huser
+        is "${output}" "HUSER.*${baseuid}" "Container should start with baseuid from /etc/subuid not user UID"
+        run_podman rm -t 0 --force ${cid}
+    else
+        run_podman 125 run -d --userns=nomap $IMAGE sleep 100
+        is "${output}" "Error: nomap is only supported in rootless mode" "Container should fail to start since nomap is not suppored in rootful mode"
+    fi
+}
+
+@test "podman userns=keep-id" {
+    if is_rootless; then
+        user=$(id -u)
+        run_podman run --rm --userns=keep-id $IMAGE id -u
+        is "${output}" "$user" "Container should run as the current user"
+    else
+        run_podman 125 run --rm --userns=keep-id $IMAGE id -u
+        is "${output}" "Error: keep-id is only supported in rootless mode" "Container should fail to start since keep-id is not suppored in rootful mode"
+    fi
 }

@@ -99,11 +99,28 @@ esac
 if ((CONTAINER==0)); then  # Not yet running inside a container
     # Discovered reemergence of BFQ scheduler bug in kernel 5.8.12-200
     # which causes a kernel panic when system is under heavy I/O load.
-    # Previously discovered in F32beta and confirmed fixed. It's been
-    # observed in F31 kernels as well.  Deploy workaround for all VMs
-    # to ensure a more stable I/O scheduler (elevator).
-    echo "mq-deadline" > /sys/block/sda/queue/scheduler
-    warn "I/O scheduler: $(cat /sys/block/sda/queue/scheduler)"
+    # Disable the I/O scheduler (a.k.a. elevator) for all environments,
+    # leaving optimization up to underlying storage infrastructure.
+    testfs="/"  # mountpoint that experiences the most I/O during testing
+    msg "Querying block device owning partition hosting the '$testfs' filesystem"
+    # Need --nofsroot b/c btrfs appends subvolume label to `source` name
+    testdev=$(findmnt --canonicalize --noheadings --nofsroot \
+              --output source --mountpoint $testfs)
+    msg "    found partition: '$testdev'"
+    testdisk=$(lsblk --noheadings --output pkname --paths $testdev)
+    msg "    found block dev: '$testdisk'"
+    testsched="/sys/block/$(basename $testdisk)/queue/scheduler"
+    if [[ -n "$testdev" ]] && [[ -n "$testdisk" ]] && [[ -e "$testsched" ]]; then
+        msg "    Found active I/O scheduler: $(cat $testsched)"
+        if [[ ! "$(<$testsched)" =~ \[none\]  ]]; then
+            msg "    Disabling elevator for '$testsched'"
+            echo "none" > "$testsched"
+        else
+            msg "    Elevator already disabled"
+        fi
+    else
+        warn "Sys node for elevator doesn't exist: '$testsched'"
+    fi
 fi
 
 # Which distribution are we testing on.
@@ -186,10 +203,11 @@ esac
 # Required to be defined by caller: Are we testing as root or a regular user
 case "$PRIV_NAME" in
     root)
-        if [[ "$TEST_FLAVOR" = "sys" ]]; then
+        if [[ "$TEST_FLAVOR" = "sys" || "$TEST_FLAVOR" = "apiv2" ]]; then
             # Used in local image-scp testing
             setup_rootless
             echo "PODMAN_ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
+            echo "PODMAN_ROOTLESS_UID=$ROOTLESS_UID" >> /etc/ci_environment
         fi
         ;;
     rootless)
@@ -203,6 +221,7 @@ esac
 
 if [[ -n "$ROOTLESS_USER" ]]; then
     echo "ROOTLESS_USER=$ROOTLESS_USER" >> /etc/ci_environment
+    echo "ROOTLESS_UID=$ROOTLESS_UID" >> /etc/ci_environment
 fi
 
 # Required to be defined by caller: Are we testing podman or podman-remote client
@@ -292,6 +311,13 @@ case "$TEST_FLAVOR" in
             die "Invalid value for \$TEST_ENVIRON=$TEST_ENVIRON"
         fi
 
+        install_test_configs
+        ;;
+    machine)
+        rpm -ivh $PACKAGE_DOWNLOAD_DIR/podman-gvproxy*
+        remove_packaged_podman_files
+        make install.tools
+        make install PREFIX=/usr ETCDIR=/etc
         install_test_configs
         ;;
     gitlab)

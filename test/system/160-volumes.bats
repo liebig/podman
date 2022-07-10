@@ -64,6 +64,29 @@ function teardown() {
 }
 
 
+# Filter volumes by name
+@test "podman volume filter --name" {
+    suffix=$(random_string)
+    prefix="volume"
+
+    for i in 1 2; do
+        myvolume=${prefix}_${i}_${suffix}
+        run_podman volume create $myvolume
+        is "$output" "$myvolume" "output from volume create $i"
+    done
+
+    run_podman volume ls --filter name=${prefix}_1.+ --format "{{.Name}}"
+    is "$output" "${prefix}_1_${suffix}" "--filter name=${prefix}_1.+ shows only one volume"
+
+    # The _1* is intentional as asterisk has different meaning in glob and regexp. Make sure this is regexp
+    run_podman volume ls --filter name=${prefix}_1* --format "{{.Name}}"
+    is "$output" "${prefix}_1_${suffix}.*${prefix}_2_${suffix}.*" "--filter name=${prefix}_1* shows ${prefix}_1_${suffix} and ${prefix}_2_${suffix}"
+
+    for i in 1 2; do
+        run_podman volume rm ${prefix}_${i}_${suffix}
+    done
+}
+
 # Named volumes
 @test "podman volume create / run" {
     myvolume=myvol$(random_string)
@@ -409,6 +432,45 @@ NeedsChown    | true
         run_podman 125 volume mount ${myvolume}
 	is "$output" "Error: cannot run command \"podman volume mount\" in rootless mode, must execute.*podman unshare.*first" "Should fail and complain about unshare"
     fi
+}
+
+@test "podman --image-volume" {
+    tmpdir=$PODMAN_TMPDIR/volume-test
+    mkdir -p $tmpdir
+    containerfile=$tmpdir/Containerfile
+    cat >$containerfile <<EOF
+FROM $IMAGE
+VOLUME /data
+EOF
+    fs=$(stat -f -c %T .)
+    run_podman build -t volume_image $tmpdir
+
+    containersconf=$tmpdir/containers.conf
+    cat >$containersconf <<EOF
+[engine]
+image_volume_mode="tmpfs"
+EOF
+
+    run_podman run --image-volume tmpfs --rm volume_image stat -f -c %T /data
+    is "$output" "tmpfs" "Should be tmpfs"
+
+    run_podman 1 run --image-volume ignore --rm volume_image stat -f -c %T /data
+    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exists"
+
+    CONTAINERS_CONF="$containersconf" run_podman run --rm volume_image stat -f -c %T /data
+    is "$output" "tmpfs" "Should be tmpfs"
+
+    CONTAINERS_CONF="$containersconf" run_podman run --image-volume bind --rm volume_image stat -f -c %T /data
+    assert "$output" != "tmpfs" "Should match hosts $fs"
+
+    CONTAINERS_CONF="$containersconf" run_podman run --image-volume tmpfs --rm volume_image stat -f -c %T /data
+    is "$output" "tmpfs" "Should be tmpfs"
+
+    CONTAINERS_CONF="$containersconf" run_podman 1 run --image-volume ignore --rm volume_image stat -f -c %T /data
+    is "$output" "stat: can't read file system information for '/data': No such file or directory" "Should fail with /data does not exists"
+
+    run_podman rm --all --force -t 0
+    run_podman image rm --force localhost/volume_image
 }
 
 # vim: filetype=sh

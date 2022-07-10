@@ -17,7 +17,6 @@ import (
 	"github.com/coreos/stream-metadata-go/fedoracoreos"
 	"github.com/coreos/stream-metadata-go/release"
 	"github.com/coreos/stream-metadata-go/stream"
-	"github.com/pkg/errors"
 
 	digest "github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
@@ -139,19 +138,12 @@ func getStreamURL(streamType string) url2.URL {
 
 // This should get Exported and stay put as it will apply to all fcos downloads
 // getFCOS parses fedoraCoreOS's stream and returns the image download URL and the release version
-func GetFCOSDownload(imageStream string) (*FcosDownloadInfo, error) { //nolint:staticcheck
+func GetFCOSDownload(imageStream string) (*FcosDownloadInfo, error) {
 	var (
 		fcosstable stream.Stream
 		altMeta    release.Release
 		streamType string
 	)
-
-	// This is being hard set to testing. Once podman4 is in the
-	// fcos trees, we should remove it and re-release at least on
-	// macs.
-	// TODO: remove when podman4.0 is in coreos
-
-	imageStream = "podman-testing" //nolint:staticcheck
 
 	switch imageStream {
 	case "podman-testing":
@@ -163,7 +155,7 @@ func GetFCOSDownload(imageStream string) (*FcosDownloadInfo, error) { //nolint:s
 	case "stable":
 		streamType = fedoracoreos.StreamStable
 	default:
-		return nil, errors.Errorf("invalid stream %s: valid streams are `testing` and `stable`", imageStream)
+		return nil, fmt.Errorf("invalid stream %s: valid streams are `testing` and `stable`", imageStream)
 	}
 	streamurl := getStreamURL(streamType)
 	resp, err := http.Get(streamurl.String())

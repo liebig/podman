@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path"
 	"reflect"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/containers/podman/v4/pkg/signal"
 	systemdDefine "github.com/containers/podman/v4/pkg/systemd/define"
 	"github.com/containers/podman/v4/pkg/util"
+	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +71,7 @@ func setupImageEngine(cmd *cobra.Command) (entities.ImageEngine, error) {
 		return nil, err
 	}
 	// we also need to set up the container engine since this
-	// is required to setup the rootless namespace
+	// is required to set up the rootless namespace
 	if _, err = setupContainerEngine(cmd); err != nil {
 		return nil, err
 	}
@@ -282,6 +284,90 @@ func getNetworks(cmd *cobra.Command, toComplete string, cType completeType) ([]s
 	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
+func fdIsNotDir(f *os.File) bool {
+	stat, err := f.Stat()
+	if err != nil {
+		cobra.CompErrorln(err.Error())
+		return true
+	}
+	return !stat.IsDir()
+}
+
+func getPathCompletion(root string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if toComplete == "" {
+		toComplete = "/"
+	}
+	// Important: securejoin is required to make sure we never leave the root mount point
+	userpath, err := securejoin.SecureJoin(root, toComplete)
+	if err != nil {
+		cobra.CompErrorln(err.Error())
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	var base string
+	f, err := os.Open(userpath)
+	// when error or file is not dir get the parent path to stat
+	if err != nil || fdIsNotDir(f) {
+		// Do not use path.Dir() since this cleans the paths which
+		// then no longer matches the user input.
+		userpath, base = path.Split(userpath)
+		toComplete, _ = path.Split(toComplete)
+		f, err = os.Open(userpath)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveDefault
+		}
+	}
+
+	if fdIsNotDir(f) {
+		// nothing to complete since it is no dir
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		cobra.CompErrorln(err.Error())
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	if len(entries) == 0 {
+		// path is empty dir, just add the trailing slash and no space
+		if !strings.HasSuffix(toComplete, "/") {
+			toComplete += "/"
+		}
+		return []string{toComplete}, cobra.ShellCompDirectiveDefault | cobra.ShellCompDirectiveNoSpace
+	}
+	completions := make([]string, 0, len(entries))
+	count := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base) {
+			suf := ""
+			// When the entry is an directory we add the "/" as suffix and do not want to add space
+			// to match normal shell completion behavior.
+			// Just inc counter again to fake more than one entry in this case and thus get no space.
+			if e.IsDir() {
+				suf = "/"
+				count++
+			}
+			completions = append(completions, simplePathJoinUnix(toComplete, e.Name()+suf))
+			count++
+		}
+	}
+	directive := cobra.ShellCompDirectiveDefault
+	if count > 1 {
+		// when we have more than one match we do not want to add a space after the completion
+		directive |= cobra.ShellCompDirectiveNoSpace
+	}
+	return completions, directive
+}
+
+// simplePathJoinUnix joins to path components by adding a slash only if p1 doesn't end with one.
+// We cannot use path.Join() for the completions logic because this one always calls Clean() on
+// the path which changes it from the input.
+func simplePathJoinUnix(p1, p2 string) string {
+	if p1[len(p1)-1] == '/' {
+		return p1 + p2
+	}
+	return p1 + "/" + p2
+}
+
 // validCurrentCmdLine validates the current cmd line
 // It utilizes the Args function from the cmd struct
 // In most cases the Args function validates the args length but it
@@ -434,6 +520,16 @@ func AutocompletePodsRunning(cmd *cobra.Command, args []string, toComplete strin
 	return getPods(cmd, toComplete, completeDefault, "running", "degraded")
 }
 
+// AutoCompletePodsPause - Autocomplete only paused pod names
+// When a pod has a few containers paused, that ends up in degraded state
+// So autocomplete degraded pod names as well
+func AutoCompletePodsPause(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if !validCurrentCmdLine(cmd, args, toComplete) {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return getPods(cmd, toComplete, completeDefault, "paused", "degraded")
+}
+
 // AutocompleteForKube - Autocomplete all Podman objects supported by kube generate.
 func AutocompleteForKube(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if !validCurrentCmdLine(cmd, args, toComplete) {
@@ -523,8 +619,32 @@ func AutocompleteCreateRun(cmd *cobra.Command, args []string, toComplete string)
 		}
 		return getImages(cmd, toComplete)
 	}
-	// TODO: add path completion for files in the image
-	return nil, cobra.ShellCompDirectiveDefault
+	// Mount the image and provide path completion
+	engine, err := setupImageEngine(cmd)
+	if err != nil {
+		cobra.CompErrorln(err.Error())
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+
+	resp, err := engine.Mount(registry.Context(), []string{args[0]}, entities.ImageMountOptions{})
+	if err != nil {
+		cobra.CompErrorln(err.Error())
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+	defer func() {
+		_, err := engine.Unmount(registry.Context(), []string{args[0]}, entities.ImageUnmountOptions{})
+		if err != nil {
+			cobra.CompErrorln(err.Error())
+		}
+	}()
+	if len(resp) != 1 {
+		return nil, cobra.ShellCompDirectiveDefault
+	}
+
+	// So this uses ShellCompDirectiveDefault to also still provide normal shell
+	// completion in case no path matches. This is useful if someone tries to get
+	// completion for paths that are not available in the image, e.g. /proc/...
+	return getPathCompletion(resp[0].Path, toComplete)
 }
 
 // AutocompleteRegistries - Autocomplete registries.
@@ -572,14 +692,40 @@ func AutocompleteCpCommand(cmd *cobra.Command, args []string, toComplete string)
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 	if len(args) < 2 {
+		if i := strings.IndexByte(toComplete, ':'); i > -1 {
+			// Looks like the user already set the container.
+			// Lets mount it and provide path completion for files in the container.
+			engine, err := setupContainerEngine(cmd)
+			if err != nil {
+				cobra.CompErrorln(err.Error())
+				return nil, cobra.ShellCompDirectiveDefault
+			}
+
+			resp, err := engine.ContainerMount(registry.Context(), []string{toComplete[:i]}, entities.ContainerMountOptions{})
+			if err != nil {
+				cobra.CompErrorln(err.Error())
+				return nil, cobra.ShellCompDirectiveDefault
+			}
+			defer func() {
+				_, err := engine.ContainerUnmount(registry.Context(), []string{toComplete[:i]}, entities.ContainerUnmountOptions{})
+				if err != nil {
+					cobra.CompErrorln(err.Error())
+				}
+			}()
+			if len(resp) != 1 {
+				return nil, cobra.ShellCompDirectiveDefault
+			}
+			comps, directive := getPathCompletion(resp[0].Path, toComplete[i+1:])
+			return prefixSlice(toComplete[:i+1], comps), directive
+		}
+		// Suggest containers when they match the input otherwise normal shell completion is used
 		containers, _ := getContainers(cmd, toComplete, completeDefault)
 		for _, container := range containers {
-			// TODO: Add path completion for inside the container if possible
 			if strings.HasPrefix(container, toComplete) {
-				return containers, cobra.ShellCompDirectiveNoSpace
+				return suffixCompSlice(":", containers), cobra.ShellCompDirectiveNoSpace
 			}
 		}
-		// else complete paths
+		// else complete paths on the host
 		return nil, cobra.ShellCompDirectiveDefault
 	}
 	// don't complete more than 2 args
@@ -820,7 +966,7 @@ func AutocompleteLogOpt(cmd *cobra.Command, args []string, toComplete string) ([
 // AutocompletePullOption - Autocomplete pull options for create and run command.
 // -> "always", "missing", "never"
 func AutocompletePullOption(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	pullOptions := []string{"always", "missing", "never"}
+	pullOptions := []string{"always", "missing", "never", "newer"}
 	return pullOptions, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -1471,8 +1617,14 @@ func AutocompleteClone(cmd *cobra.Command, args []string, toComplete string) ([]
 	}
 	switch len(args) {
 	case 0:
+		if cmd.Parent().Name() == "pod" { // needs to be " pod " to exclude 'podman'
+			return getPods(cmd, toComplete, completeDefault)
+		}
 		return getContainers(cmd, toComplete, completeDefault)
 	case 2:
+		if cmd.Parent().Name() == "pod" {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
 		return getImages(cmd, toComplete)
 	}
 	return nil, cobra.ShellCompDirectiveNoFileComp

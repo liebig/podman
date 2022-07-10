@@ -2,6 +2,7 @@ package images
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"github.com/containers/podman/v4/pkg/bindings"
 	"github.com/containers/podman/v4/pkg/domain/entities"
 	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/pkg/errors"
 )
 
 // Exists a lightweight way to determine if an image exists in local storage.  It returns a
@@ -345,4 +345,24 @@ func Search(ctx context.Context, term string, options *SearchOptions) ([]entitie
 	}
 
 	return results, nil
+}
+
+func Scp(ctx context.Context, source, destination *string, options ScpOptions) (reports.ScpReport, error) {
+	rep := reports.ScpReport{}
+
+	conn, err := bindings.GetClient(ctx)
+	if err != nil {
+		return rep, err
+	}
+	params, err := options.ToParams()
+	if err != nil {
+		return rep, err
+	}
+	response, err := conn.DoRequest(ctx, nil, http.MethodPost, fmt.Sprintf("/images/scp/%s", *source), params, nil)
+	if err != nil {
+		return rep, err
+	}
+	defer response.Body.Close()
+
+	return rep, response.Process(&rep)
 }

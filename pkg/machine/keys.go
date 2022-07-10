@@ -6,6 +6,7 @@ package machine
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -51,7 +52,23 @@ func CreateSSHKeysPrefix(dir string, file string, passThru bool, skipExisting bo
 // generatekeys creates an ed25519 set of keys
 func generatekeys(writeLocation string) error {
 	args := append(append([]string{}, sshCommand[1:]...), writeLocation)
-	return exec.Command(sshCommand[0], args...).Run()
+	cmd := exec.Command(sshCommand[0], args...)
+	stdErr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	waitErr := cmd.Wait()
+	if waitErr == nil {
+		return nil
+	}
+	errMsg, err := io.ReadAll(stdErr)
+	if err != nil {
+		return fmt.Errorf("key generation failed, unable to read from stderr: %w", waitErr)
+	}
+	return fmt.Errorf("failed to generate keys: %s: %w", string(errMsg), waitErr)
 }
 
 // generatekeys creates an ed25519 set of keys
@@ -59,7 +76,16 @@ func generatekeysPrefix(dir string, file string, passThru bool, prefix ...string
 	args := append([]string{}, prefix[1:]...)
 	args = append(args, sshCommand...)
 	args = append(args, file)
-	cmd := exec.Command(prefix[0], args...)
+
+	binary, err := exec.LookPath(prefix[0])
+	if err != nil {
+		return err
+	}
+	binary, err = filepath.Abs(binary)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	if passThru {
 		cmd.Stdin = os.Stdin

@@ -332,7 +332,7 @@ EOF
 @test "podman pod create --share" {
     local pod_name="$(random_string 10 | tr A-Z a-z)"
     run_podman 125 pod create --share bogus --name $pod_name
-    is "$output" ".*Invalid kernel namespace to share: bogus. Options are: cgroup, ipc, net, pid, uts or none" \
+    is "$output" ".*invalid kernel namespace to share: bogus. Options are: cgroup, ipc, net, pid, uts or none" \
        "pod test for bogus --share option"
     run_podman pod create --share ipc --name $pod_name
     run_podman pod inspect $pod_name --format "{{.SharedNamespaces}}"
@@ -470,6 +470,51 @@ spec:
     is "$output" "stop" "custom exit policy"
     _ensure_pod_state $name-pod Exited
     run_podman pod rm $name-pod
+}
+
+@test "pod resource limits" {
+    skip_if_remote "resource limits only implemented on non-remote"
+    if is_rootless; then
+        skip "only meaningful for rootful"
+    fi
+
+    local name1="resources1"
+    run_podman --cgroup-manager=systemd pod create --name=$name1 --cpus=5 --memory=10m
+    run_podman --cgroup-manager=systemd pod start $name1
+    run_podman pod inspect --format '{{.CgroupPath}}' $name1
+    local path1="$output"
+    local actual1=$(< /sys/fs/cgroup/$path1/cpu.max)
+    is "$actual1" "500000 100000" "resource limits set properly"
+    local actual2=$(< /sys/fs/cgroup/$path1/memory.max)
+    is "$actual2" "10485760" "resource limits set properly"
+    run_podman pod --cgroup-manager=systemd rm -f $name1
+
+    local name2="resources2"
+    run_podman --cgroup-manager=cgroupfs pod create --cpus=5 --memory=10m --name=$name2
+    run_podman --cgroup-manager=cgroupfs pod start $name2
+    run_podman pod inspect --format '{{.CgroupPath}}' $name2
+    local path2="$output"
+    local actual2=$(< /sys/fs/cgroup/$path2/cpu.max)
+    is "$actual2" "500000 100000" "resource limits set properly"
+    local actual2=$(< /sys/fs/cgroup/$path2/memory.max)
+    is "$actual2" "10485760" "resource limits set properly"
+    run_podman --cgroup-manager=cgroupfs pod rm $name2
+}
+
+@test "podman pod ps doesn't race with pod rm" {
+    # create a few pods
+    for i in {0..10}; do
+        run_podman pod create
+    done
+
+    # and delete them
+    $PODMAN pod rm -a &
+
+    # pod ps should not fail while pods are deleted
+    run_podman pod ps -q
+
+    # wait for pod rm -a
+    wait
 }
 
 # vim: filetype=sh

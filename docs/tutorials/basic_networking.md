@@ -13,13 +13,14 @@ Each setup is supported with an example.
 
 ## Differences between rootful and rootless container networking
 
-One of the guiding factors on networking for containers with Podman is going to be
-whether or not the container is run by a root user or not.  This is because unprivileged
-users cannot create networking interfaces on the host.  Therefore, with rootful
-containers, the default networking mode is to use netavark.
-For rootless, the default network
-mode is slirp4netns. Because of the limited privileges, slirp4netns lacks some of
-the features of networking; for example, slirp4netns cannot give containers a
+One of the guiding factors on networking for containers with Podman is going to
+be whether or not the container is run by a root user or not. This is because
+unprivileged users cannot create networking interfaces on the host. Therefore,
+for rootless containers, the default network mode is slirp4netns. Because of the
+limited privileges, slirp4netns lacks some of the features of networking
+compared to rootful Podman's networking; for example, slirp4netns cannot give
+containers a routable IP address. The default networking mode for rootful
+containers on the other side is netavark, which allows a container to have a
 routable IP address.
 
 ## Firewalls
@@ -92,6 +93,22 @@ $ podman network create
 When rootless containers are run, network operations
 will be executed inside an extra network namespace. To join this namespace, use
 `podman unshare --rootless-netns`.
+
+#### Default Network
+
+The default network `podman` with netavark is memory-only.  It does not support dns resolution because of backwards compatibility with Docker.  To change settings, export the in-memory network and change the file.
+
+For the default rootful network use
+```
+podman network inspect podman | jq .[] > /etc/containers/networks/podman.json
+```
+
+And for the rootless network use
+
+```
+podman network inspect podman | jq .[] > ~/.local/share/containers/storage/networks/podman.json
+```
+
 
 #### Example
 

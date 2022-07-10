@@ -2,9 +2,10 @@ package e2e
 
 import (
 	"strings"
+	"time"
 
 	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/cmd/podman/machine"
+	"github.com/containers/podman/v4/pkg/domain/entities"
 	jsoniter "github.com/json-iterator/go"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -29,7 +30,7 @@ var _ = Describe("podman machine list", func() {
 		firstList, err := mb.setCmd(list).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(firstList).Should(Exit(0))
-		Expect(len(firstList.outputToStringSlice())).To(Equal(1)) // just the header
+		Expect(firstList.outputToStringSlice()).To(HaveLen(1)) // just the header
 
 		i := new(initMachine)
 		session, err := mb.setCmd(i.withImagePath(mb.imagePath)).run()
@@ -39,7 +40,7 @@ var _ = Describe("podman machine list", func() {
 		secondList, err := mb.setCmd(list).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(secondList).To(Exit(0))
-		Expect(len(secondList.outputToStringSlice())).To(Equal(2)) // one machine and the header
+		Expect(secondList.outputToStringSlice()).To(HaveLen(2)) // one machine and the header
 	})
 
 	It("list machines with quiet or noheading", func() {
@@ -51,12 +52,12 @@ var _ = Describe("podman machine list", func() {
 		firstList, err := mb.setCmd(list.withQuiet()).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(firstList).Should(Exit(0))
-		Expect(len(firstList.outputToStringSlice())).To(Equal(0)) // No header with quiet
+		Expect(firstList.outputToStringSlice()).To(HaveLen(0)) // No header with quiet
 
 		noheaderSession, err := mb.setCmd(list.withNoHeading()).run() // noheader
 		Expect(err).NotTo(HaveOccurred())
 		Expect(noheaderSession).Should(Exit(0))
-		Expect(len(noheaderSession.outputToStringSlice())).To(Equal(0))
+		Expect(noheaderSession.outputToStringSlice()).To(HaveLen(0))
 
 		i := new(initMachine)
 		session, err := mb.setName(name1).setCmd(i.withImagePath(mb.imagePath)).run()
@@ -70,7 +71,7 @@ var _ = Describe("podman machine list", func() {
 		secondList, err := mb.setCmd(list.withQuiet()).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(secondList).To(Exit(0))
-		Expect(len(secondList.outputToStringSlice())).To(Equal(2)) // two machines, no header
+		Expect(secondList.outputToStringSlice()).To(HaveLen(2)) // two machines, no header
 
 		listNames := secondList.outputToStringSlice()
 		stripAsterisk(listNames)
@@ -87,7 +88,7 @@ var _ = Describe("podman machine list", func() {
 		startSession, err := mb.setCmd(s).runWithoutWait()
 		Expect(err).To(BeNil())
 		l := new(listMachine)
-		for { // needs to be infinite because we need to check if running when inspect returns to avoid race conditions.
+		for i := 0; i < 30; i++ {
 			listSession, err := mb.setCmd(l).run()
 			Expect(listSession).To(Exit(0))
 			Expect(err).To(BeNil())
@@ -96,6 +97,7 @@ var _ = Describe("podman machine list", func() {
 			} else {
 				break
 			}
+			time.Sleep(3 * time.Second)
 		}
 		Expect(startSession).To(Exit(0))
 		listSession, err := mb.setCmd(l).run()
@@ -116,10 +118,10 @@ var _ = Describe("podman machine list", func() {
 
 		// go format
 		list := new(listMachine)
-		listSession, err := mb.setCmd(list.withFormat("{{.Name}}").withNoHeading()).run()
+		listSession, err := mb.setCmd(list.withFormat("{{.Name}}")).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(listSession).To(Exit(0))
-		Expect(len(listSession.outputToStringSlice())).To(Equal(1))
+		Expect(listSession.outputToStringSlice()).To(HaveLen(1))
 
 		listNames := listSession.outputToStringSlice()
 		stripAsterisk(listNames)
@@ -128,13 +130,21 @@ var _ = Describe("podman machine list", func() {
 		// --format json
 		list2 := new(listMachine)
 		list2 = list2.withFormat("json")
-		listSession2, err := mb.setName("foo1").setCmd(list2).run()
+		listSession2, err := mb.setCmd(list2).run()
 		Expect(err).To(BeNil())
 		Expect(listSession2).To(Exit(0))
 
-		var listResponse []*machine.ListReporter
+		var listResponse []*entities.ListReporter
 		err = jsoniter.Unmarshal(listSession.Bytes(), &listResponse)
 		Expect(err).To(BeNil())
+
+		// table format includes the header
+		list = new(listMachine)
+		listSession3, err3 := mb.setCmd(list.withFormat("table {{.Name}}")).run()
+		Expect(err3).NotTo(HaveOccurred())
+		Expect(listSession3).To(Exit(0))
+		listNames3 := listSession3.outputToStringSlice()
+		Expect(listNames3).To(HaveLen(2))
 	})
 })
 

@@ -82,7 +82,7 @@ var _ = Describe("Podman pause", func() {
 		// check we can read stats for a paused container
 		result = podmanTest.Podman([]string{"stats", "--no-stream", cid})
 		result.WaitWithDefaultTimeout()
-		Expect(result).To(ExitWithError())
+		Expect(result).Should(Exit(0))
 	})
 
 	It("podman pause a running container by id", func() {
@@ -273,7 +273,7 @@ var _ = Describe("Podman pause", func() {
 	It("Pause a bunch of running containers", func() {
 		for i := 0; i < 3; i++ {
 			name := fmt.Sprintf("test%d", i)
-			run := podmanTest.Podman([]string{"run", "-dt", "--name", name, nginx})
+			run := podmanTest.Podman([]string{"run", "-dt", "--name", name, NGINX_IMAGE})
 			run.WaitWithDefaultTimeout()
 			Expect(run).Should(Exit(0))
 
@@ -300,7 +300,7 @@ var _ = Describe("Podman pause", func() {
 	It("Unpause a bunch of running containers", func() {
 		for i := 0; i < 3; i++ {
 			name := fmt.Sprintf("test%d", i)
-			run := podmanTest.Podman([]string{"run", "-dt", "--name", name, nginx})
+			run := podmanTest.Podman([]string{"run", "-dt", "--name", name, NGINX_IMAGE})
 			run.WaitWithDefaultTimeout()
 			Expect(run).Should(Exit(0))
 

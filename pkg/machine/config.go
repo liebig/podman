@@ -4,7 +4,7 @@
 package machine
 
 import (
-	errors2 "errors"
+	"errors"
 	"io/ioutil"
 	"net"
 	"net/url"
@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/containers/storage/pkg/homedir"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,7 +41,9 @@ const (
 	// Running indicates the qemu vm is running.
 	Running Status = "running"
 	// Stopped indicates the vm has stopped.
-	Stopped            Status = "stopped"
+	Stopped Status = "stopped"
+	// Starting indicated the vm is in the process of starting
+	Starting           Status = "starting"
 	DefaultMachineName string = "podman-machine-default"
 )
 
@@ -53,6 +54,7 @@ type Provider interface {
 	IsValidVMName(name string) (bool, error)
 	CheckExclusiveActiveVM() (bool, string, error)
 	RemoveAndCleanMachines() error
+	VMType() string
 }
 
 type RemoteConnectionType string
@@ -62,7 +64,7 @@ var (
 	DefaultIgnitionUserName                      = "core"
 	ErrNoSuchVM                                  = errors.New("VM does not exist")
 	ErrVMAlreadyExists                           = errors.New("VM already exists")
-	ErrVMAlreadyRunning                          = errors.New("VM already running")
+	ErrVMAlreadyRunning                          = errors.New("VM already running or starting")
 	ErrMultipleActiveVM                          = errors.New("only one VM can be active at a time")
 	ForwarderBinaryName                          = "gvproxy"
 )
@@ -88,6 +90,7 @@ type ListResponse struct {
 	CreatedAt      time.Time
 	LastUp         time.Time
 	Running        bool
+	Starting       bool
 	Stream         string
 	VMType         string
 	CPUs           uint64
@@ -138,14 +141,15 @@ type DistributionDownload interface {
 	Get() *Download
 }
 type InspectInfo struct {
-	ConfigPath VMFile
-	Created    time.Time
-	Image      ImageConfig
-	LastUp     time.Time
-	Name       string
-	Resources  ResourceConfig
-	SSHConfig  SSHConfig
-	State      Status
+	ConfigPath     VMFile
+	ConnectionInfo ConnectionConfig
+	Created        time.Time
+	Image          ImageConfig
+	LastUp         time.Time
+	Name           string
+	Resources      ResourceConfig
+	SSHConfig      SSHConfig
+	State          Status
 }
 
 func (rc RemoteConnectionType) MakeSSHURL(host, path, port, userName string) url.URL {
@@ -251,11 +255,11 @@ func (m *VMFile) GetPath() string {
 // the actual path
 func (m *VMFile) Delete() error {
 	if m.Symlink != nil {
-		if err := os.Remove(*m.Symlink); err != nil && !errors2.Is(err, os.ErrNotExist) {
+		if err := os.Remove(*m.Symlink); err != nil && !errors.Is(err, os.ErrNotExist) {
 			logrus.Errorf("unable to remove symlink %q", *m.Symlink)
 		}
 	}
-	if err := os.Remove(m.Path); err != nil && !errors2.Is(err, os.ErrNotExist) {
+	if err := os.Remove(m.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
@@ -269,14 +273,14 @@ func (m *VMFile) Read() ([]byte, error) {
 // NewMachineFile is a constructor for VMFile
 func NewMachineFile(path string, symlink *string) (*VMFile, error) {
 	if len(path) < 1 {
-		return nil, errors2.New("invalid machine file path")
+		return nil, errors.New("invalid machine file path")
 	}
 	if symlink != nil && len(*symlink) < 1 {
-		return nil, errors2.New("invalid symlink path")
+		return nil, errors.New("invalid symlink path")
 	}
 	mf := VMFile{Path: path}
 	if symlink != nil && len(path) > maxSocketPathLength {
-		if err := mf.makeSymlink(symlink); err != nil && !errors2.Is(err, os.ErrExist) {
+		if err := mf.makeSymlink(symlink); err != nil && !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
 	}
@@ -286,13 +290,13 @@ func NewMachineFile(path string, symlink *string) (*VMFile, error) {
 // makeSymlink for macOS creates a symlink in $HOME/.podman/
 // for a machinefile like a socket
 func (m *VMFile) makeSymlink(symlink *string) error {
-	homedir, err := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	sl := filepath.Join(homedir, ".podman", *symlink)
+	sl := filepath.Join(homeDir, ".podman", *symlink)
 	// make the symlink dir and throw away if it already exists
-	if err := os.MkdirAll(filepath.Dir(sl), 0700); err != nil && !errors2.Is(err, os.ErrNotExist) {
+	if err := os.MkdirAll(filepath.Dir(sl), 0700); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	m.Symlink = &sl
@@ -334,4 +338,10 @@ type SSHConfig struct {
 	Port int
 	// RemoteUsername of the vm user
 	RemoteUsername string
+}
+
+// ConnectionConfig contains connections like sockets, etc.
+type ConnectionConfig struct {
+	// PodmanSocket is the exported podman service socket
+	PodmanSocket *VMFile `json:"PodmanSocket"`
 }

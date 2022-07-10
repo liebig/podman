@@ -110,15 +110,24 @@ var _ = Describe("Podman volume create", func() {
 		Expect(session.OutputToString()).To(ContainSubstring("hello"))
 	})
 
-	It("podman import volume should fail", func() {
+	It("podman import/export volume should fail", func() {
 		// try import on volume or source which does not exists
-		if podmanTest.RemoteTest {
-			Skip("Volume export check does not work with a remote client")
-		}
+		SkipIfRemote("Volume export check does not work with a remote client")
 
 		session := podmanTest.Podman([]string{"volume", "import", "notfound", "notfound.tar"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).To(ExitWithError())
+		Expect(session.ErrorToString()).To(ContainSubstring("open notfound.tar: no such file or directory"))
+
+		session = podmanTest.Podman([]string{"volume", "import", "notfound", "-"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).To(ExitWithError())
+		Expect(session.ErrorToString()).To(ContainSubstring("no such volume notfound"))
+
+		session = podmanTest.Podman([]string{"volume", "export", "notfound"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).To(ExitWithError())
+		Expect(session.ErrorToString()).To(ContainSubstring("no such volume notfound"))
 	})
 
 	It("podman create volume with bad volume option", func() {
@@ -152,5 +161,20 @@ var _ = Describe("Podman volume create", func() {
 		inspectOpts.WaitWithDefaultTimeout()
 		Expect(inspectOpts).Should(Exit(0))
 		Expect(inspectOpts.OutputToString()).To(Equal(optionStrFormatExpect))
+	})
+
+	It("podman create volume with o=timeout", func() {
+		volName := "testVol"
+		timeout := 10
+		timeoutStr := "10"
+		session := podmanTest.Podman([]string{"volume", "create", "--opt", fmt.Sprintf("o=timeout=%d", timeout), volName})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		inspectTimeout := podmanTest.Podman([]string{"volume", "inspect", "--format", "{{ .Timeout }}", volName})
+		inspectTimeout.WaitWithDefaultTimeout()
+		Expect(inspectTimeout).Should(Exit(0))
+		Expect(inspectTimeout.OutputToString()).To(Equal(timeoutStr))
+
 	})
 })

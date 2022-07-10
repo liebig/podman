@@ -1,10 +1,9 @@
 package e2e
 
 import (
-	"encoding/json"
+	"strings"
 
 	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/containers/podman/v4/pkg/machine/qemu"
 	jsoniter "github.com/json-iterator/go"
 
 	. "github.com/onsi/ginkgo"
@@ -50,24 +49,6 @@ var _ = Describe("podman machine stop", func() {
 		Expect(err).To(BeNil())
 		Expect(inspectSession).To(Exit(0))
 		Expect(inspectSession.Bytes()).To(ContainSubstring("foo1"))
-
-		type fakeInfos struct {
-			Status string
-			VM     qemu.MachineVM
-		}
-		infos := make([]fakeInfos, 0, 2)
-		err = json.Unmarshal(inspectSession.Bytes(), &infos)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(len(infos)).To(Equal(2))
-
-		// rm := new(rmMachine)
-		// //	Must manually clean up due to multiple names
-		// for _, name := range []string{"foo1", "foo2"} {
-		//	mb.setName(name).setCmd(rm.withForce()).run()
-		//	mb.names = []string{}
-		// }
-		// mb.names = []string{}
-
 	})
 
 	It("inspect with go format", func() {
@@ -86,6 +67,7 @@ var _ = Describe("podman machine stop", func() {
 		var inspectInfo []machine.InspectInfo
 		err = jsoniter.Unmarshal(inspectSession.Bytes(), &inspectInfo)
 		Expect(err).To(BeNil())
+		Expect(strings.HasSuffix(inspectInfo[0].ConnectionInfo.PodmanSocket.GetPath(), "podman.sock"))
 
 		inspect := new(inspectMachine)
 		inspect = inspect.withFormat("{{.Name}}")

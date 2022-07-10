@@ -44,7 +44,7 @@ func PrintPodPruneResults(podPruneReports []*entities.PodPruneReport, heading bo
 
 func PrintContainerPruneResults(containerPruneReports []*reports.PruneReport, heading bool) error {
 	var errs OutputErrors
-	if heading && (len(containerPruneReports) > 0) {
+	if heading && len(containerPruneReports) > 0 {
 		fmt.Println("Deleted Containers")
 	}
 	for _, v := range containerPruneReports {
@@ -72,7 +72,7 @@ func PrintVolumePruneResults(volumePruneReport []*reports.PruneReport, heading b
 }
 
 func PrintImagePruneResults(imagePruneReports []*reports.PruneReport, heading bool) error {
-	if heading {
+	if heading && len(imagePruneReports) > 0 {
 		fmt.Println("Deleted Images")
 	}
 	for _, r := range imagePruneReports {
@@ -83,4 +83,19 @@ func PrintImagePruneResults(imagePruneReports []*reports.PruneReport, heading bo
 	}
 
 	return nil
+}
+
+func PrintNetworkPruneResults(networkPruneReport []*reports.PruneReport, heading bool) error {
+	var errs OutputErrors
+	if heading && len(networkPruneReport) > 0 {
+		fmt.Println("Deleted Networks")
+	}
+	for _, r := range networkPruneReport {
+		if r.Err == nil {
+			fmt.Println(r.Id)
+		} else {
+			errs = append(errs, r.Err)
+		}
+	}
+	return errs.PrintErrors()
 }
