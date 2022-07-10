@@ -11,7 +11,8 @@ Podman is based on libpod, a library for container lifecycle management that is 
 ## Linux AMD64 binaries
 
 * [Nightly Builds](https://github.com/liebig/podman/actions/workflows/build_linux_nightly.yml)
-* [Latest Version: 4.1.0](https://github.com/liebig/podman/releases/tag/v4.1.0-release)
+* [Latest Version: 4.1.1](https://github.com/liebig/podman/releases/tag/v4.1.1-release)
+* [Version: 4.1.0](https://github.com/liebig/podman/releases/tag/v4.1.0-release)
 * [Version: 4.0.3](https://github.com/liebig/podman/releases/tag/v4.0.3-release)
 * [Version: 3.4.7](https://github.com/liebig/podman/releases/tag/v3.4.7-release)
 
