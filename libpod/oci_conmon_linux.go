@@ -133,7 +133,7 @@ func newConmonOCIRuntime(name string, paths []string, conmonPath string, runtime
 			continue
 		}
 		foundPath = true
-		logrus.Tracef("found runtime %q", runtime.path)
+		logrus.Tracef("found runtime %q", path)
 		runtime.path = path
 		break
 	}
@@ -303,7 +303,7 @@ func (r *ConmonOCIRuntime) UpdateContainerStatus(ctr *Container) error {
 			ctr.state.ExitCode = -1
 			ctr.state.FinishedTime = time.Now()
 			ctr.state.State = define.ContainerStateExited
-			return nil
+			return ctr.runtime.state.AddContainerExitCode(ctr.ID(), ctr.state.ExitCode)
 		}
 		return fmt.Errorf("error getting container %s state. stderr/out: %s: %w", ctr.ID(), out, err)
 	}
@@ -1388,7 +1388,7 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 }
 
 func startCommand(cmd *exec.Cmd, ctr *Container) error {
-	// Make sure to unset the NOTIFY_SOCKET and reset if afterwards if needed.
+	// Make sure to unset the NOTIFY_SOCKET and reset it afterwards if needed.
 	switch ctr.config.SdNotifyMode {
 	case define.SdNotifyModeContainer, define.SdNotifyModeIgnore:
 		if ctr.notifySocket != "" {
@@ -1667,7 +1667,7 @@ func httpAttachNonTerminalCopy(container *net.UnixConn, http *bufio.ReadWriter, 
 			// multiplexing by Conmon).
 			headerLen := uint32(numR - 1)
 			// Practically speaking, we could make this buf[0] - 1,
-			// but we need to validate it anyways...
+			// but we need to validate it anyway.
 			switch buf[0] {
 			case AttachPipeStdin:
 				headerBuf = makeHTTPAttachHeader(0, headerLen)
