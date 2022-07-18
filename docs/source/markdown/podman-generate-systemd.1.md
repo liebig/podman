@@ -55,7 +55,7 @@ Use the name of the container for the start, stop, and description in the unit f
 
 Using this flag will yield unit files that do not expect containers and pods to exist.  Instead, new containers and pods are created based on their configuration files.  The unit files are created best effort and may need to be further edited; please review the generated files carefully before using them in production.
 
-Note that `--new` only works on containers and pods created directly via Podman (i.e., `podman [container] {create,run}` or `podman pod create`).  It does not work on containers or pods created via the REST API or via `podman play kube`.
+Note that `--new` only works on containers and pods created directly via Podman (i.e., `podman [container] {create,run}` or `podman pod create`).  It does not work on containers or pods created via the REST API or via `podman kube play`.
 
 #### **--no-header**
 
@@ -83,11 +83,11 @@ Takes a value in seconds.
 
 Set the systemd unit name separator between the name/id of a container/pod and the prefix. The default is *-*.
 
-#### **--start-timeout** =*value*
+#### **--start-timeout**=*value*
 
 Override the default start timeout for the container with the given value in seconds.
 
-#### **--stop-timeout** =*value*
+#### **--stop-timeout**=*value*
 
 Override the default stop timeout for the container with the given value in seconds.
 
