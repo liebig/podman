@@ -49,6 +49,7 @@ jobs:
           build-essential
 
         run: |
+          go version
           make BUILDTAGS="seccomp"
           make podman-release
           
