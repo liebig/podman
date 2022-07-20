@@ -45,7 +45,8 @@ jobs:
           libsystemd-dev \
           pkg-config \
           runc \
-          uidmap
+          uidmap \
+          build-essential
 
         run: |
           make BUILDTAGS="seccomp"
