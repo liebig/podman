@@ -1,4 +1,4 @@
-name: Build Linux Nightly
+name: Build ARMv7 Nightly
 
 on:
   push:
@@ -13,9 +13,18 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    
-    - name: Install Dependencies
-      run: |
+
+    - name: Build in armv7 container
+      uses: uraimo/run-on-arch-action@v2
+      with:
+        arch: armv7
+        distro: ubuntu20.04
+
+        # Not required, but speeds up builds by storing container images in
+        # a GitHub package registry.
+        githubToken: ${{ github.token }}
+
+        install: |
           sudo apt-get update && sudo apt-get -y install \
           btrfs-progs \
           git \
@@ -37,9 +46,8 @@ jobs:
           pkg-config \
           runc \
           uidmap
-          
-    - name: Build
-      run: |
+
+        run: |
           make BUILDTAGS="seccomp"
           sudo make podman-release
           
