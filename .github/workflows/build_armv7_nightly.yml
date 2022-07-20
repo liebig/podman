@@ -49,7 +49,7 @@ jobs:
           build-essential
 
         run: |
-          go version
+          git config --global --add safe.directory /home/runner/work/podman/podman
           make BUILDTAGS="seccomp"
           make podman-release
           
