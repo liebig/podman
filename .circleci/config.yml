@@ -5,22 +5,51 @@ version: 2.1
 # Define a job to be invoked later in a workflow.
 # See: https://circleci.com/docs/2.0/configuration-reference/#jobs
 jobs:
-  say-hello:
-    # Specify the execution environment. You can specify an image from Dockerhub or use one of our Convenience Images from CircleCI's Developer Hub.
-    # See: https://circleci.com/docs/2.0/configuration-reference/#docker-machine-macos-windows-executor
+  build-arm:
     docker:
-      - image: cimg/base:stable
+      - image: ubuntu-2004:current
     # Add steps to the job
     # See: https://circleci.com/docs/2.0/configuration-reference/#steps
+    resource_class: arm.medium
     steps:
       - checkout
       - run:
-          name: "Say hello"
-          command: "echo Hello, World!"
+          name: Install
+          command: |
+            apt-get update && apt-get -y install \
+            btrfs-progs \
+            git \
+            golang-go \
+            go-md2man \
+            iptables \
+            libassuan-dev \
+            libbtrfs-dev \
+            libc6-dev \
+            libdevmapper-dev \
+            libglib2.0-dev \
+            libgpgme-dev \
+            libgpg-error-dev \
+            libprotobuf-dev \
+            libprotobuf-c-dev \
+            libseccomp-dev \
+            libselinux1-dev \
+            libsystemd-dev \
+            pkg-config \
+            runc \
+            uidmap \
+            build-essential
+      - run:
+          name: Build
+          command: |
+            make BUILDTAGS="seccomp"
+            make podman-release
+      - store_artifacts:
+          path: ./podman-*.tar.gz
+          destination: podman-release
 
 # Invoke jobs via workflows
 # See: https://circleci.com/docs/2.0/configuration-reference/#workflows
 workflows:
-  say-hello-workflow:
+  build-arm-nightly:
     jobs:
-      - say-hello
+      - build-arm
