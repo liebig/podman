@@ -89,3 +89,4 @@ workflows:
   build-nightly:
     jobs:
       - build-linux-arm
+      - build-linux-amd64
