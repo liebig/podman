@@ -4,6 +4,7 @@ jobs:
   build-linux-amd64:
     docker:
       - image: cimg/base:current-22.04
+    resource_class: medium
     steps:
       - checkout
       - run:
