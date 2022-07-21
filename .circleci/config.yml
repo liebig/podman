@@ -16,7 +16,7 @@ jobs:
       - run:
           name: Install
           command: |
-            apt-get update && apt-get -y install \
+            sudo apt-get update && sudo apt-get -y install \
             btrfs-progs \
             git \
             golang-go \
