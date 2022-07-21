@@ -6,8 +6,8 @@ version: 2.1
 # See: https://circleci.com/docs/2.0/configuration-reference/#jobs
 jobs:
   build-arm:
-    docker:
-      - image: ubuntu-2004:current
+    machine:
+      image: ubuntu-2004:current
     # Add steps to the job
     # See: https://circleci.com/docs/2.0/configuration-reference/#steps
     resource_class: arm.medium
