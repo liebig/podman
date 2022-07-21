@@ -46,7 +46,7 @@ jobs:
             make BUILDTAGS="seccomp"
             make podman-release
       - store_artifacts:
-          path: podman-*.tar.gz
+          path: podman-release-arm64.tar.gz
           destination: podman-release
 
 # Invoke jobs via workflows
