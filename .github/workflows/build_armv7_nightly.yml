@@ -50,6 +50,9 @@ jobs:
 
         run: |
           git config --global --add safe.directory /home/runner/work/podman/podman
+          GOOS=linux
+          GOARM=7
+          GOARCH=arm
           make BUILDTAGS="seccomp"
           make podman-release
           
