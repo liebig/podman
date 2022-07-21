@@ -86,9 +86,9 @@ workflows:
     jobs:
       - hold:
           type: approval
-      - build-linux-amd64
+      - build-linux-amd64:
           requires:
             - hold
-      - build-linux-arm64
+      - build-linux-arm64:
           requires:
             - hold
