@@ -1,0 +1,94 @@
+version: 2.1
+
+jobs:
+  build-linux-amd64:
+    docker:
+      - image: cimg/base:current-22.04
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            sudo apt-get update && sudo apt-get -y install \
+            btrfs-progs \
+            git \
+            golang-go \
+            go-md2man \
+            iptables \
+            libassuan-dev \
+            libbtrfs-dev \
+            libc6-dev \
+            libdevmapper-dev \
+            libglib2.0-dev \
+            libgpgme-dev \
+            libgpg-error-dev \
+            libprotobuf-dev \
+            libprotobuf-c-dev \
+            libseccomp-dev \
+            libselinux1-dev \
+            libsystemd-dev \
+            pkg-config \
+            runc \
+            uidmap \
+            build-essential
+      - run:
+          name: Build
+          command: |
+            make BUILDTAGS="seccomp"
+            make podman-release
+      - store_artifacts:
+          path: podman-release-amd64.tar.gz
+          destination: podman-release-v4.1.1-amd64.tar.gz
+
+  build-linux-arm64:
+    machine:
+      image: ubuntu-2004:current
+    resource_class: arm.medium
+    steps:
+      - checkout
+      - run:
+          name: Install
+          command: |
+            sudo apt-get update && sudo apt-get -y install \
+            btrfs-progs \
+            git \
+            golang-go \
+            go-md2man \
+            iptables \
+            libassuan-dev \
+            libbtrfs-dev \
+            libc6-dev \
+            libdevmapper-dev \
+            libglib2.0-dev \
+            libgpgme-dev \
+            libgpg-error-dev \
+            libprotobuf-dev \
+            libprotobuf-c-dev \
+            libseccomp-dev \
+            libselinux1-dev \
+            libsystemd-dev \
+            pkg-config \
+            runc \
+            uidmap \
+            build-essential
+      - run:
+          name: Build
+          command: |
+            make BUILDTAGS="seccomp"
+            make podman-release
+      - store_artifacts:
+          path: podman-release-arm64.tar.gz
+          destination: podman-release-v4.1.1-arm64.tar.gz
+
+workflows:
+  build-release:
+    jobs:
+      - hold:
+          type: approval
+      - build-linux-amd64
+          requires:
+            - hold
+      - build-linux-arm64
+          requires:
+            - hold
